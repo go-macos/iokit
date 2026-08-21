@@ -23,12 +23,14 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Vet
         run: CGO_ENABLED=0 go vet ./...
-      - name: Test (CGO=0, real IOKit: enumerate, open, stream)
+      - name: "Test (CGO=0, real IOKit; enumerate, open, stream)"
         run: CGO_ENABLED=0 go test -count=1 -coverprofile=cover.out ./...
       - name: Coverage summary
         run: go tool cover -func=cover.out | tail -1
       - name: Race (CGO=1)
         run: CGO_ENABLED=1 go test -race -count=1 ./...
+      - name: "Probe (listing only; a CI runner has no XR device to stream from)"
+        run: CGO_ENABLED=0 go run ./cmd/hidprobe
 
   linux:
     name: linux (stub build + OS-independent tests)
@@ -63,6 +65,3 @@ jobs:
         run: go test -count=1 ./...
         env:
           CGO_ENABLED: '0'
-
-      - name: Probe (list devices; a CI runner has no HID, so only the listing is asserted)
-        run: CGO_ENABLED=0 go run ./cmd/hidprobe
