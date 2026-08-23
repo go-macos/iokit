@@ -127,7 +127,13 @@ the control above passing on the same open handle:
 - **1792 vendor device-to-host requests** — `bRequest` `0x00`–`0xFF`, recipient
   device and interfaces 0–5 — **every one stalled.**
 - The documented VITURE IMU-enable packet sent as a vendor host-to-device
-  request stalled on every `bRequest` tried, at both recipients.
+
+- Class-typed device-to-host requests were swept too, in case the vendor
+  tunnelled its protocol through the CDC interface's class requests. Of 3840
+  tried (`bRequest` `0x00`–`0xFF` across recipients device, interface and
+  endpoint, `wIndex` 0, 1, 5, `0x83`, `0x84`), exactly two answered: the CDC
+  `GET_LINE_CODING`/`SET_LINE_CODING` pair on interfaces 0 and 1, returning
+  seven zero bytes. That is a stub line-coding implementation, not a protocol.
 
 So the vendor channel is not on endpoint 0. What the configuration descriptor
 does show is a **CDC-ACM serial function** (interfaces 0–1, bulk `0x03` out /
