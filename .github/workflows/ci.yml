@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   darwin:
-    name: darwin (on-device IOKit HID enumeration, CGO=0)
+    name: darwin (on-device IOKit HID + USB enumeration, CGO=0)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +31,8 @@ jobs:
         run: CGO_ENABLED=1 go test -race -count=1 ./...
       - name: "Probe (listing only; a CI runner has no XR device to stream from)"
         run: CGO_ENABLED=0 go run ./cmd/hidprobe
+      - name: "USB probe (read-only listing; opens nothing)"
+        run: CGO_ENABLED=0 go run ./cmd/usbprobe
 
   linux:
     name: linux (stub build + OS-independent tests)
