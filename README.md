@@ -127,7 +127,7 @@ the control above passing on the same open handle:
 - **1792 vendor device-to-host requests** — `bRequest` `0x00`–`0xFF`, recipient
   device and interfaces 0–5 — **every one stalled.**
 - The documented VITURE IMU-enable packet sent as a vendor host-to-device
-
+  request stalled on every `bRequest` tried, at both recipients.
 - Class-typed device-to-host requests were swept too, in case the vendor
   tunnelled its protocol through the CDC interface's class requests. Of 3840
   tried (`bRequest` `0x00`–`0xFF` across recipients device, interface and
