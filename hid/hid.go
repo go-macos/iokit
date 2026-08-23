@@ -24,6 +24,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/go-macos/iokit/ioreturn"
 )
 
 // ReportKind selects which of the three HID report channels a call addresses.
@@ -66,17 +68,21 @@ var (
 )
 
 // Common IOReturn codes, so a caller can react to the ones that mean something
-// actionable rather than matching on hex.
+// actionable rather than matching on hex. The values live in the shared
+// ioreturn package, which is where every IOKit binding in this module gets
+// them from; the names here stay local because what a code MEANS is
+// domain-specific -- kIOReturnUnsupported on a HID device is a missing report
+// channel, and on a USB device it is something else entirely.
 const (
-	ioReturnSuccess       int32 = 0
-	ioReturnNotPermitted  int32 = -536870174 // 0xE00002E2 kIOReturnNotPermitted
-	ioReturnNoDevice      int32 = -536870208 // 0xE00002C0 kIOReturnNoDevice
-	ioReturnExclusiveAcc  int32 = -536870203 // 0xE00002C5 kIOReturnExclusiveAccess
-	ioReturnUnsupportedOp int32 = -536870201 // 0xE00002C7 kIOReturnUnsupported
+	ioReturnSuccess       = int32(ioreturn.Success)
+	ioReturnNotPermitted  = int32(ioreturn.NotPermitted)
+	ioReturnNoDevice      = int32(ioreturn.NoDevice)
+	ioReturnExclusiveAcc  = int32(ioreturn.ExclusiveAccess)
+	ioReturnUnsupportedOp = int32(ioreturn.Unsupported)
 	// ioReturnInternalError stands in when the failure is on our side of the
 	// boundary -- the frameworks would not load, so no IOReturn was ever
-	// produced. 0xE00002BC kIOReturnInternalError.
-	ioReturnInternalError int32 = -536870212
+	// produced. It is kIOReturnError, IOKit's general-purpose failure.
+	ioReturnInternalError = int32(ioreturn.Err)
 )
 
 // IOError wraps a non-zero IOKit IOReturn code from a named operation. IOReturn
