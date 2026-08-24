@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-macos/iokit/ioreturn"
 	"github.com/go-macos/iokit/usb"
 	"github.com/go-macos/iokit/viture"
 )
@@ -46,13 +47,22 @@ func main() {
 
 // options are the parsed command line.
 type options struct {
-	device  string
-	control bool
-	scan    bool
-	imu     bool
-	seize   bool
-	timeout time.Duration
-	maxReq  int
+	device    string
+	control   bool
+	scan      bool
+	imu       bool
+	filter    usb.Filter
+	iface     int
+	bulkRead  int
+	bulkOut   int
+	bulkWrite string
+	bulkIMU   bool
+	bulkFor   time.Duration
+	cdc       bool
+	cdcSet    int
+	seize     bool
+	timeout   time.Duration
+	maxReq    int
 }
 
 func run(w io.Writer, args []string) error {
@@ -63,6 +73,14 @@ func run(w io.Writer, args []string) error {
 	fs.BoolVar(&o.control, "control", false, "open each device and read its device descriptor (the binding's known-good control)")
 	fs.BoolVar(&o.scan, "scan", false, "sweep vendor-defined device-to-host requests, looking for one the device answers")
 	fs.BoolVar(&o.imu, "imu", false, "WRITE the VITURE IMU-enable packet to the device (the only flag that writes)")
+	fs.IntVar(&o.iface, "iface", -1, "work on this interface number instead of the device (-1 for none)")
+	fs.IntVar(&o.bulkRead, "bulk-read", 0, "poll this IN endpoint address for -bulk-for (e.g. 0x83)")
+	fs.IntVar(&o.bulkOut, "bulk-out", 0, "OUT endpoint address that -bulk-write and -bulk-imu use (e.g. 0x03)")
+	fs.StringVar(&o.bulkWrite, "bulk-write", "", "WRITE these hex bytes to the -bulk-out endpoint")
+	fs.BoolVar(&o.bulkIMU, "bulk-imu", false, "WRITE the VITURE IMU-enable packet to the -bulk-out endpoint")
+	fs.DurationVar(&o.bulkFor, "bulk-for", 5*time.Second, "how long -bulk-read keeps polling")
+	fs.BoolVar(&o.cdc, "cdc", false, "read the CDC line coding straight from the device, bypassing the kernel serial driver")
+	fs.IntVar(&o.cdcSet, "cdc-set", 0, "WRITE this line rate with CDC SET_LINE_CODING and read it back")
 	fs.BoolVar(&o.seize, "seize", false, "take the device from its current owner if a plain open is refused")
 	fs.DurationVar(&o.timeout, "timeout", 250*time.Millisecond, "per-transfer timeout")
 	fs.IntVar(&o.maxReq, "max-request", 0xFF, "highest bRequest the sweep tries")
@@ -73,6 +91,10 @@ func run(w io.Writer, args []string) error {
 	filter, err := parseFilter(o.device)
 	if err != nil {
 		return err
+	}
+	o.filter = filter
+	if o.iface >= 0 {
+		return ifaceMode(w, o)
 	}
 	devs, err := usb.Devices(filter)
 	if err != nil {
@@ -132,7 +154,7 @@ func report(w io.Writer, d *usb.Device, o options) {
 		fmt.Fprintf(w, "  %s\n", strings.ReplaceAll(cfg.String(), "\n", "\n  "))
 	}
 
-	if !o.control && !o.scan && !o.imu {
+	if !o.control && !o.scan && !o.imu && !o.cdc && o.cdcSet == 0 {
 		return
 	}
 
@@ -159,9 +181,56 @@ func report(w io.Writer, d *usb.Device, o options) {
 	if o.scan {
 		sweep(w, d, o)
 	}
+	if o.cdc || o.cdcSet != 0 {
+		cdcCheck(w, d, o)
+	}
 	if o.imu {
 		imuAttempt(w, d, o.timeout)
 	}
+}
+
+// cdcCheck asks the device itself what its serial function is configured for.
+//
+// This is the question the kernel driver stands between: /dev/cu.* reports what
+// AppleUSBACM believes, while GET_LINE_CODING reports what the firmware
+// believes, and the two disagreeing -- or the second answering seven zero bytes
+// to everything -- is the difference between a real CDC function and a
+// descriptor-only one whose /dev node leads nowhere.
+func cdcCheck(w io.Writer, d *usb.Device, o options) {
+	for _, iface := range []uint16{0, 1} {
+		if o.cdcSet != 0 {
+			want := usb.LineCoding{Rate: uint32(o.cdcSet), StopBits: usb.Stop1, Parity: usb.ParityNone, DataBits: 8}
+			_, err := d.Control(usb.SetLineCoding(iface), want.Bytes(), o.timeout)
+			fmt.Fprintf(w, "  CDC if%d SET_LINE_CODING %s: %s\n", iface, want, result(err))
+			// DTR and RTS on a USB CDC device are this request, not a wire.
+			_, err = d.Control(usb.SetControlLineState(iface, usb.ControlLineDTR|usb.ControlLineRTS), nil, o.timeout)
+			fmt.Fprintf(w, "  CDC if%d SET_CONTROL_LINE_STATE DTR|RTS: %s\n", iface, result(err))
+		}
+		buf := make([]byte, usb.LineCodingSize)
+		n, err := d.Control(usb.GetLineCoding(iface), buf, o.timeout)
+		if err != nil {
+			fmt.Fprintf(w, "  CDC if%d GET_LINE_CODING: %v\n", iface, err)
+			continue
+		}
+		lc, perr := usb.ParseLineCoding(buf[:n])
+		switch {
+		case perr != nil:
+			fmt.Fprintf(w, "  CDC if%d GET_LINE_CODING: %d byte(s) %s: %v\n", iface, n, hex.EncodeToString(buf[:n]), perr)
+		case lc.Zero():
+			fmt.Fprintf(w, "  CDC if%d GET_LINE_CODING: %d byte(s) %s -- ALL ZERO: the request is ACKed and unimplemented\n", iface, n, hex.EncodeToString(buf[:n]))
+		default:
+			fmt.Fprintf(w, "  CDC if%d GET_LINE_CODING: %d byte(s) %s = %s\n", iface, n, hex.EncodeToString(buf[:n]), lc)
+		}
+	}
+}
+
+// result renders a control transfer outcome in one word, so a column of them
+// can be read at a glance.
+func result(err error) string {
+	if err == nil {
+		return "ACCEPTED"
+	}
+	return err.Error()
 }
 
 // controlCheck is the known-good control for the whole binding. GET_DESCRIPTOR
@@ -301,4 +370,161 @@ func imuAttempt(w io.Writer, d *usb.Device, timeout time.Duration) {
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Interface and pipe mode.
+// ---------------------------------------------------------------------------
+
+// ifaceMode lists a device's interfaces and, on request, claims one and talks
+// to its pipes.
+//
+// It is the last door in the device: endpoint 0 is shared and refuses vendor
+// requests, the HID interface accepts reports and answers none, so what remains
+// is the bulk pipes a kernel driver already owns. Whether macOS hands them over
+// is the question, and the IOReturn code is the answer worth recording either
+// way.
+func ifaceMode(w io.Writer, o options) error {
+	filter := usb.InterfaceFilter{VendorID: o.filter.VendorID, ProductIDs: o.filter.ProductIDs}
+	if o.iface >= 0 {
+		filter.Numbers = []uint8{uint8(o.iface)}
+	}
+	ifs, err := usb.Interfaces(filter)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, i := range ifs {
+			i.Close()
+		}
+	}()
+	fmt.Fprintf(w, "== %d USB interface(s) ==\n", len(ifs))
+	for _, i := range ifs {
+		fmt.Fprintf(w, "\n%s\n", i)
+		ifaceReport(w, i, o)
+	}
+	return nil
+}
+
+// ifaceReport claims one interface and reports what it found.
+func ifaceReport(w io.Writer, i *usb.InterfaceHandle, o options) {
+	if err := i.Open(); err != nil {
+		fmt.Fprintf(w, "  USBInterfaceOpen: %v\n", err)
+		if !o.seize {
+			fmt.Fprintln(w, "  not retrying with a seize (-seize to take it from its driver)")
+			return
+		}
+		if err := i.OpenSeize(); err != nil {
+			fmt.Fprintf(w, "  USBInterfaceOpenSeize: %v\n", err)
+			return
+		}
+		fmt.Fprintln(w, "  USBInterfaceOpenSeize: SUCCEEDED -- the kernel driver has been displaced")
+	} else {
+		fmt.Fprintln(w, "  USBInterfaceOpen: ok")
+	}
+
+	pipes, err := i.Pipes()
+	if err != nil {
+		fmt.Fprintf(w, "  pipes: %v\n", err)
+		return
+	}
+	for _, p := range pipes {
+		fmt.Fprintf(w, "  %s\n", p)
+	}
+
+	if o.bulkWrite != "" {
+		writePipe(w, i, pipes, o)
+	}
+	if o.bulkIMU {
+		writeBytes(w, i, pipes, o, viture.EnableIMU(true, 0), "the VITURE IMU-enable packet")
+	}
+	if o.bulkRead != 0 {
+		readPipe(w, i, pipes, o)
+	}
+}
+
+// findPipe resolves an endpoint address to the pipe ref the read and write
+// calls take.
+func findPipe(pipes []usb.Pipe, address byte) (usb.Pipe, bool) {
+	for _, p := range pipes {
+		if p.Address() == address {
+			return p, true
+		}
+	}
+	return usb.Pipe{}, false
+}
+
+// writePipe sends the -bulk-write bytes.
+func writePipe(w io.Writer, i *usb.InterfaceHandle, pipes []usb.Pipe, o options) {
+	b, err := hex.DecodeString(strings.NewReplacer(" ", "", ":", "", "-", "").Replace(o.bulkWrite))
+	if err != nil {
+		fmt.Fprintf(w, "  -bulk-write is not hex: %v\n", err)
+		return
+	}
+	writeBytes(w, i, pipes, o, b, "the -bulk-write payload")
+}
+
+// writeBytes sends payload on the OUT pipe named by -bulk-out.
+func writeBytes(w io.Writer, i *usb.InterfaceHandle, pipes []usb.Pipe, o options, payload []byte, what string) {
+	p, ok := findPipe(pipes, byte(o.bulkOut))
+	if !ok {
+		fmt.Fprintf(w, "  no endpoint %#02x on this interface\n", byte(o.bulkOut))
+		return
+	}
+	n, err := i.Write(p.Ref, payload, o.timeout)
+	if err != nil {
+		fmt.Fprintf(w, "  WRITE ep %#02x %s: %v\n", p.Address(), what, err)
+		return
+	}
+	fmt.Fprintf(w, "  WRITE ep %#02x %s: %d byte(s) ACKed by the device's controller: %s\n",
+		p.Address(), what, n, hex.EncodeToString(payload))
+}
+
+// readPipe reads from the IN pipe named by -bulk-read, printing the raw bytes
+// before any interpretation of them.
+func readPipe(w io.Writer, i *usb.InterfaceHandle, pipes []usb.Pipe, o options) {
+	p, ok := findPipe(pipes, byte(o.bulkRead))
+	if !ok {
+		fmt.Fprintf(w, "  no endpoint %#02x on this interface\n", byte(o.bulkRead))
+		return
+	}
+	size := int(p.MaxPacket)
+	if size <= 0 {
+		size = 512
+	}
+	deadline := time.Now().Add(o.bulkFor)
+	total, reads, timeouts := 0, 0, 0
+	for time.Now().Before(deadline) {
+		buf := make([]byte, size)
+		n, err := i.Read(p.Ref, buf, o.timeout)
+		reads++
+		switch {
+		case n > 0:
+			// Raw bytes first, always, and before any interpretation of them.
+			total += n
+			fmt.Fprintf(w, "  READ  ep %#02x attempt %d: %d byte(s)\n", p.Address(), reads, n)
+			fmt.Fprintf(w, "        %s\n", hex.EncodeToString(buf[:n]))
+		case isTimeout(err):
+			timeouts++
+		case err != nil:
+			fmt.Fprintf(w, "  READ  ep %#02x attempt %d: %v\n", p.Address(), reads, err)
+			return
+		}
+	}
+	fmt.Fprintf(w, "  READ  ep %#02x: %d byte(s) in %d attempt(s) over %v, %d of them timed out\n",
+		p.Address(), total, reads, o.bulkFor, timeouts)
+	if total == 0 {
+		fmt.Fprintln(w, "  READ  the pipe was polled and stayed empty: the device NAKed every IN token")
+	}
+}
+
+// isTimeout reports whether an error is the ordinary "the device had nothing to
+// send" answer rather than a failure. A NAKed bulk IN is the expected outcome
+// of polling an idle pipe, so it must not end the loop.
+func isTimeout(err error) bool {
+	var e *usb.IOError
+	if !errors.As(err, &e) {
+		return false
+	}
+	return e.Code == ioreturn.USBTransactionTimeout || e.Code == ioreturn.Timeout
 }

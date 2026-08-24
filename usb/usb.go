@@ -182,6 +182,8 @@ var (
 	// device's cached descriptor is too short to carry its own length, which
 	// means the kernel handed back something that is not a descriptor.
 	ErrShortDescriptor = errors.New("usb: descriptor shorter than its own header")
+	// ErrReleased is returned by an [Interface] method called after Close.
+	ErrReleased = errors.New("usb: interface already released")
 )
 
 // maxTransfer is the largest wLength a setup packet can express.

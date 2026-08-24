@@ -22,4 +22,16 @@ func init() {
 	}
 	configDesc = func(uintptr, byte) ([]byte, ioreturn.Code) { return nil, ioreturn.Unsupported }
 	releaseRef = func(uintptr) {}
+
+	enumerateIfaces = func() ([]InterfaceInfo, []uintptr, error) { return nil, nil, ErrUnsupported }
+	openIface = func(uintptr, bool) ioreturn.Code { return ioreturn.Unsupported }
+	closeIface = func(uintptr) ioreturn.Code { return ioreturn.Unsupported }
+	ifacePipes = func(uintptr) ([]Pipe, ioreturn.Code) { return nil, ioreturn.Unsupported }
+	pipeRead = func(uintptr, uint8, []byte, time.Duration) (int, ioreturn.Code) {
+		return 0, ioreturn.Unsupported
+	}
+	pipeWrite = func(uintptr, uint8, []byte, time.Duration) (int, ioreturn.Code) {
+		return 0, ioreturn.Unsupported
+	}
+	releaseIface = func(uintptr) {}
 }

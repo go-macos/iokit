@@ -92,6 +92,44 @@ index. Those indices were printed by a C program calling `offsetof()` on the
 real headers, because counting them off the documented method list gets it
 wrong — `DeviceRequest` is at index 26, not the 24 an eyeball count suggests.
 
+## `serial` — the CDC-ACM port, with no cgo
+
+A composite USB device that publishes a CDC-ACM function gets a `/dev/cu.*`
+and `/dev/tty.*` pair from Apple's driver, and those bulk pipes are the one
+channel `usb` cannot reach while the kernel owns them. `serial` opens the tty,
+puts it in raw mode through termios, and drives the modem lines.
+
+```go
+p, err := serial.Open("/dev/cu.usbmodem14201", serial.Config{
+        Baud: 115200, CLOCAL: true, ReadMin: 1,
+})
+defer p.Close()
+
+p.SetLines(serial.LineDTR|serial.LineRTS, 0)   // a cu. node leaves both low
+n, _ := serial.Drain(p, buf, time.Now().Add(30*time.Second))
+```
+
+### Three things that will cost you an afternoon
+
+**`VMIN=0` with `VTIME=0` makes every port look mute.** That is the POSIX
+polling mode: `read(2)` returns zero bytes immediately when the queue is empty,
+Go reports a zero-byte read on a character device as `io.EOF`, and a thirty
+second listen ends in one microsecond with nothing to show. `Config.ReadMin`
+should be 1. The package's own control caught this on its first run.
+
+**`/dev/cu.*` does not raise DTR and `/dev/tty.*` blocks until carrier.** A
+device whose firmware waits for DTR is silent on one node and alive on the
+other, with no error either way. `Open` always passes `O_NONBLOCK` so the
+dial-in node cannot hang, and `SetLines` lets the question be asked of both.
+
+**A driver with a table of standard rates rejects the whole termios over the
+rate alone.** macOS answers `EINVAL` to 1000000 baud and drops the parity and
+data bits with it. `Configure` retries at the rate already in force and then
+insists through `IOSSIOSPEED`, which is how 3 Mbaud becomes reachable.
+
+`serial.Loopback` allocates a pseudo-terminal so a probe can prove its reader
+reads before concluding anything from silence.
+
 ## `viture` — the classic VITURE MCU protocol
 
 Packet framing and CRC-16/CCITT-FALSE for VITURE XR glasses, with no I/O
@@ -137,17 +175,89 @@ the control above passing on the same open handle:
 
 So the vendor channel is not on endpoint 0. What the configuration descriptor
 does show is a **CDC-ACM serial function** (interfaces 0–1, bulk `0x03` out /
-`0x83` in, 512 bytes) alongside the audio and HID interfaces — macOS binds it
-as `/dev/cu.usbmodem*`, and the vendor's own app holds an
-`AppleUSBHostInterfaceUserClient` on interface 0. That, not endpoint 0, is
-where the protocol lives.
+`0x83` in, 512 bytes) alongside the audio and HID interfaces, which macOS binds
+as `/dev/cu.usbmodem*`.
+
+Two corrections to what that first pass concluded, both established below. The
+vendor application holds an `AppleUSBHostInterfaceUserClient` on **every**
+interface, 0 through 5, not on interface 0 in particular -- that is simply what
+opening a device and iterating its interfaces looks like in the registry, and
+it points at nothing. And on a later run the CDC line-coding requests stopped
+answering at all, `kIOReturnNotResponding` rather than seven zero bytes, so
+even the stub was not a standing behaviour.
+
+## `cmd/serialprobe`
+
+```
+go run ./cmd/serialprobe                                    # list ports, open nothing
+go run ./cmd/serialprobe -selftest                          # the loopback control
+go run ./cmd/serialprobe -port usbmodem14201 -listen 30s    # read, send nothing
+go run ./cmd/serialprobe -port usbmodem14201 -listen 5s -imu -dtr -rts
+go run ./cmd/serialprobe -port usbmodem14201 -sweep -imu    # rates x nodes x lines
+```
+
+Every mode that touches hardware runs the loopback control first and refuses to
+continue if it fails.
+
+## Measured: the VITURE Beast (`35ca:1201`) serial function does not carry bytes
+
+The second half of the same afternoon, recorded so nobody repeats it. Same
+machine, macOS 26.6.2 arm64, with the vendor application running and holding a
+user client on all six interfaces.
+
+**The tty is mute in both directions.** `/dev/cu.usbmodem*` and
+`/dev/tty.usbmodem*`, at 115200, 921600, 1000000 and 3000000 baud, with DTR and
+RTS both asserted and both dropped, listening for thirty seconds without
+sending and then again after sending the documented IMU-enable packet: **not
+one byte, in any combination.** 1000000 and 3000000 are refused outright by the
+ACM driver's rate table and only become settable through `IOSSIOSPEED`.
+
+**The CDC class requests are not answered.** `GET_LINE_CODING`,
+`SET_LINE_CODING` and `SET_CONTROL_LINE_STATE` on interfaces 0 and 1 all return
+`kIOReturnNotResponding` -- the device NAKs until the timeout -- while
+`GET_DESCRIPTOR` on the same open handle keeps working before and after. So the
+firmware advertises a CDC function it does not implement.
+
+**The bulk pipes themselves are dead.** `USBInterfaceOpen` on interface 1
+**succeeds**, and `GetPipeProperties` reproduces the configuration descriptor
+exactly: pipe 1 is ep `0x03` out bulk 512, pipe 2 is ep `0x83` in bulk 512.
+Both `ReadPipeTO` on `0x83` and `WritePipeTO` on `0x03` return
+`kIOUSBTransactionTimeout`, with timeouts up to fifteen seconds. The device
+NAKs its own advertised endpoints in both directions. Interfaces 0 and 5 refuse
+to open at all: `kIOReturnExclusiveAccess`.
+
+**Two instrument bugs were caught before they became findings**, and both are
+worth knowing:
+
+- `ReadPipeTO` leaves its size word untouched when the transfer never
+  completed, and IOKit overwrites the buffer with kernel scratch -- a poison
+  fill put in beforehand was gone. Read naively that is 512 bytes of data per
+  poll out of a device that said nothing. `usb` now reports zero bytes on any
+  non-success code.
+- A pipe reference is not an endpoint address, and getting the mapping wrong
+  gives a plausible-looking timeout rather than an error. The check that
+  settles it: IOUSBLib rejects a *read* of the OUT pipe and a *write* of the IN
+  pipe with `kIOReturnBadArgument`, and answers `kIOUSBUnknownPipeErr` for any
+  reference the interface does not own. Only the two real pipes reach the
+  device -- which is what makes their timeouts the device's answer and not the
+  instrument's.
+
+So the serial function is a descriptor-only façade. Whatever the vendor's
+application is doing, it is not sending bytes down this CDC function while a
+second client is watching it -- and this module has now eliminated HID reports,
+vendor control transfers, class control transfers, the tty, and the bulk pipes
+underneath it.
 
 ## Status
 
 `hid` is complete for enumeration, report writing and input streaming.
 `usb` is complete for enumeration, device-level open/seize, cached
-configuration descriptors and synchronous control transfers; bulk and
-interrupt pipes are not implemented yet.
+configuration descriptors, synchronous control transfers, interface
+open/seize and synchronous bulk and interrupt pipe transfers. Isochronous
+pipes and the asynchronous variants are not implemented.
+
+`serial` is complete for enumeration, open, raw-mode termios, arbitrary line
+rates through IOSSIOSPEED, modem control lines and deadline-bounded reads.
 
 The portable layer of every package is at 100% statement coverage; the purego
 bindings are verified on-device by `hidprobe`, `usbprobe` and an on-device test

@@ -44,3 +44,46 @@ func TestPublicAPIOnUnsupportedPlatform(t *testing.T) {
 		t.Error("ConfigDescriptor() = nil on an unsupported platform")
 	}
 }
+
+// TestInterfaceStubsAreWiredAndUnsupported does the same for the interface
+// half: every seam assigned, every one reporting a clean unsupported.
+func TestInterfaceStubsAreWiredAndUnsupported(t *testing.T) {
+	if _, _, err := enumerateIfaces(); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("enumerateIfaces() = %v, want ErrUnsupported", err)
+	}
+	for name, got := range map[string]ioreturn.Code{
+		"openIface":  openIface(0, false),
+		"closeIface": closeIface(0),
+		"ifacePipes": func() ioreturn.Code { _, c := ifacePipes(0); return c }(),
+		"pipeRead":   func() ioreturn.Code { _, c := pipeRead(0, 1, nil, time.Second); return c }(),
+		"pipeWrite":  func() ioreturn.Code { _, c := pipeWrite(0, 1, nil, time.Second); return c }(),
+	} {
+		if got != ioreturn.Unsupported {
+			t.Errorf("%s = %v, want kIOReturnUnsupported", name, got)
+		}
+	}
+	releaseIface(0) // must not panic
+
+	if _, err := Interfaces(InterfaceFilter{}); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("Interfaces() = %v, want ErrUnsupported", err)
+	}
+	i := &InterfaceHandle{ref: 1}
+	if err := i.Open(); err == nil {
+		t.Error("Open() = nil on an unsupported platform")
+	}
+	if err := i.OpenSeize(); err == nil {
+		t.Error("OpenSeize() = nil on an unsupported platform")
+	}
+	if _, err := i.Pipes(); err == nil {
+		t.Error("Pipes() = nil on an unsupported platform")
+	}
+	if _, err := i.Read(1, make([]byte, 4), time.Second); err == nil {
+		t.Error("Read() = nil on an unsupported platform")
+	}
+	if _, err := i.Write(1, []byte{1}, time.Second); err == nil {
+		t.Error("Write() = nil on an unsupported platform")
+	}
+	if err := i.Close(); err != nil {
+		t.Errorf("Close() = %v", err)
+	}
+}

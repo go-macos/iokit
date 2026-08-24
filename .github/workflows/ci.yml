@@ -33,6 +33,10 @@ jobs:
         run: CGO_ENABLED=0 go run ./cmd/hidprobe
       - name: "USB probe (read-only listing; opens nothing)"
         run: CGO_ENABLED=0 go run ./cmd/usbprobe
+      - name: "Serial probe (list ports, then the loopback control)"
+        run: |
+          CGO_ENABLED=0 go run ./cmd/serialprobe
+          CGO_ENABLED=0 go run ./cmd/serialprobe -selftest
 
   linux:
     name: linux (stub build + OS-independent tests)
