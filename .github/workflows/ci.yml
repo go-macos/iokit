@@ -15,8 +15,8 @@ jobs:
     name: darwin (on-device IOKit HID + USB enumeration, CGO=0)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27.0'
       - name: Gofmt
@@ -42,8 +42,8 @@ jobs:
     name: linux (stub build + OS-independent tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27.0'
       - name: Vet
@@ -59,8 +59,8 @@ jobs:
     name: windows (stub build)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27.0'
       - name: Build stub
