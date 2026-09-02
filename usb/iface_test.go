@@ -2,6 +2,7 @@ package usb
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,7 +100,7 @@ func installIfaceFakes(t *testing.T, f *ifaceFakes) {
 		openIface = old[1].(func(uintptr, bool) ioreturn.Code)
 		closeIface = old[2].(func(uintptr) ioreturn.Code)
 		ifacePipes = old[3].(func(uintptr) ([]Pipe, ioreturn.Code))
-		pipeRead = old[4].(func(uintptr, uint8, []byte, time.Duration) (int, ioreturn.Code))
+		pipeRead = old[4].(func(uintptr, uint8, []byte, time.Duration) (int, string, ioreturn.Code))
 		pipeWrite = old[5].(func(uintptr, uint8, []byte, time.Duration) (int, ioreturn.Code))
 		releaseIface = old[6].(func(uintptr))
 	})
@@ -113,7 +114,9 @@ func installIfaceFakes(t *testing.T, f *ifaceFakes) {
 	}
 	closeIface = func(uintptr) ioreturn.Code { return f.closeCode }
 	ifacePipes = func(uintptr) ([]Pipe, ioreturn.Code) { return f.pipes, f.pipesCode }
-	pipeRead = func(uintptr, uint8, []byte, time.Duration) (int, ioreturn.Code) { return f.readN, f.readCode }
+	pipeRead = func(uintptr, uint8, []byte, time.Duration) (int, string, ioreturn.Code) {
+		return f.readN, "ReadPipeTO", f.readCode
+	}
 	pipeWrite = func(uintptr, uint8, []byte, time.Duration) (int, ioreturn.Code) { return f.writeN, f.writeCode }
 	releaseIface = func(tok uintptr) { f.released = append(f.released, tok) }
 }
@@ -304,5 +307,31 @@ func TestPipeIOReportsCountsAndCodes(t *testing.T) {
 	f.writeCode = ioreturn.USBPipeStalled
 	if _, err := i.Write(1, []byte{1}, time.Second); !errors.As(err, &ioe) || !ioe.Stalled() {
 		t.Fatalf("a stalled write gave %v", err)
+	}
+}
+
+// TestAReadErrorNamesTheCallItMade. IOUSBLib has two read calls and they take
+// different pipes: ReadPipeTO is BULK ONLY and answers kIOReturnBadArgument for
+// an interrupt pipe, while ReadPipe takes any pipe and has no timeout of its
+// own. An error naming the wrong one sends the next reader to the wrong
+// documentation -- and this cost an afternoon, because a probe that ignored the
+// error read an XR headset's two interrupt endpoints and reported them silent
+// when the requests had never left the machine.
+func TestAReadErrorNamesTheCallItMade(t *testing.T) {
+	for _, op := range []string{"ReadPipe", "ReadPipeTO"} {
+		t.Run(op, func(t *testing.T) {
+			installIfaceFakes(t, &ifaceFakes{})
+			pipeRead = func(uintptr, uint8, []byte, time.Duration) (int, string, ioreturn.Code) {
+				return 0, op, ioreturn.USBTransactionTimeout
+			}
+			h := &InterfaceHandle{ref: 1}
+			_, err := h.Read(1, make([]byte, 8), time.Millisecond)
+			if err == nil {
+				t.Fatalf("a timeout was reported as success")
+			}
+			if !strings.Contains(err.Error(), op) {
+				t.Errorf("the error says %q, which does not name %s", err, op)
+			}
+		})
 	}
 }
