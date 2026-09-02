@@ -10,7 +10,7 @@ import "context"
 // seams have no error channel of their own, so they report the internal-error
 // code, which [IOError] renders as a framework-load failure.
 func init() {
-	enumerate = func() ([]Info, []uintptr, error) { return nil, nil, ErrUnsupported }
+	enumerate = func(Filter) ([]Info, []uintptr, error) { return nil, nil, ErrUnsupported }
 	openDev = func(uintptr) int32 { return ioReturnInternalError }
 	closeDev = func(uintptr) int32 { return ioReturnInternalError }
 	setReport = func(uintptr, uint32, int64, []byte) int32 { return ioReturnInternalError }

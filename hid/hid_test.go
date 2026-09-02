@@ -36,7 +36,7 @@ func withFakes(t *testing.T, f *fakes) {
 		enumerate, openDev, closeDev, setReport, stream, releaseRef =
 			oldEnum, oldOpen, oldClose, oldSet, oldStream, oldRel
 	})
-	enumerate = func() ([]Info, []uintptr, error) {
+	enumerate = func(Filter) ([]Info, []uintptr, error) {
 		if f.enumErr != nil {
 			return nil, nil, f.enumErr
 		}

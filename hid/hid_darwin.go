@@ -38,6 +38,9 @@ var (
 	cfStringCreateWithCString func(alloc uintptr, s string, enc uint32) uintptr
 	cfStringGetCString        func(str uintptr, buf unsafe.Pointer, size int64, enc uint32) bool
 	cfNumberGetValue          func(num uintptr, theType int32, valuePtr unsafe.Pointer) bool
+	cfNumberCreate            func(alloc uintptr, theType int32, valuePtr unsafe.Pointer) uintptr
+	cfDictionaryCreateMutable func(alloc uintptr, capacity int64, keyCB, valCB uintptr) uintptr
+	cfDictionarySetValue      func(dict, key, value uintptr)
 	cfSetGetCount             func(set uintptr) int64
 	cfSetGetValues            func(set uintptr, values unsafe.Pointer)
 	cfRunLoopGetCurrent       func() uintptr
@@ -59,6 +62,12 @@ var (
 	cFree   func(unsafe.Pointer)
 
 	kCFRunLoopDefaultMode uintptr
+
+	// The two callback tables a CFDictionary needs to compare its keys by
+	// VALUE. Unlike a run-loop mode name these are structs, not strings, so
+	// there is nothing to rebuild: the real exported symbols are the only way.
+	kCFTypeDictionaryKeyCallBacks   uintptr
+	kCFTypeDictionaryValueCallBacks uintptr
 )
 
 // loadOnce/loadErr record the one-shot framework and symbol resolution, so
@@ -96,6 +105,9 @@ func doLoad() error {
 	purego.RegisterLibFunc(&cfStringCreateWithCString, cf, "CFStringCreateWithCString")
 	purego.RegisterLibFunc(&cfStringGetCString, cf, "CFStringGetCString")
 	purego.RegisterLibFunc(&cfNumberGetValue, cf, "CFNumberGetValue")
+	purego.RegisterLibFunc(&cfNumberCreate, cf, "CFNumberCreate")
+	purego.RegisterLibFunc(&cfDictionaryCreateMutable, cf, "CFDictionaryCreateMutable")
+	purego.RegisterLibFunc(&cfDictionarySetValue, cf, "CFDictionarySetValue")
 	purego.RegisterLibFunc(&cfSetGetCount, cf, "CFSetGetCount")
 	purego.RegisterLibFunc(&cfSetGetValues, cf, "CFSetGetValues")
 	purego.RegisterLibFunc(&cfRunLoopGetCurrent, cf, "CFRunLoopGetCurrent")
@@ -122,6 +134,16 @@ func doLoad() error {
 	// dereferencing the global -- and it avoids the uintptr->unsafe.Pointer
 	// conversion that go vet's unsafeptr check rightly flags.
 	kCFRunLoopDefaultMode = cfstr("kCFRunLoopDefaultMode")
+
+	// These two are looked up rather than rebuilt. A missing one is not fatal:
+	// without them a matching dictionary cannot be built and enumeration falls
+	// back to matching everything, which is what this package did before.
+	if p, err := purego.Dlsym(cf, "kCFTypeDictionaryKeyCallBacks"); err == nil {
+		kCFTypeDictionaryKeyCallBacks = p
+	}
+	if p, err := purego.Dlsym(cf, "kCFTypeDictionaryValueCallBacks"); err == nil {
+		kCFTypeDictionaryValueCallBacks = p
+	}
 	return nil
 }
 
@@ -194,11 +216,58 @@ func init() {
 	}
 }
 
-// darwinEnumerate lists every HID device. It matches everything (a NULL
-// matching dictionary) and lets the portable [Filter] narrow in Go, which
-// avoids building a CFDictionary — and needing its two exported
-// callback-struct globals — for what is a handful of integer comparisons.
-func darwinEnumerate() ([]Info, []uintptr, error) {
+// matchingDict turns a Filter into what IOKit matches on, or 0 for "everything".
+//
+// A dictionary holds ONE value per key, so a filter naming several products
+// narrows by vendor here and lets the Go side pick among them. Narrowing at all
+// is the point.
+func matchingDict(f Filter) uintptr {
+	if kCFTypeDictionaryKeyCallBacks == 0 || kCFTypeDictionaryValueCallBacks == 0 {
+		return 0
+	}
+	if f.VendorID == 0 && f.UsagePage == 0 && f.Usage == 0 && len(f.ProductIDs) != 1 {
+		return 0
+	}
+	d := cfDictionaryCreateMutable(0, 0, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks)
+	if d == 0 {
+		return 0
+	}
+	set := func(key string, v uint16) {
+		if v == 0 {
+			return
+		}
+		k := cfstr(key)
+		defer cfRelease(k)
+		n := int32(v)
+		num := cfNumberCreate(0, kCFNumberSInt32Type, unsafe.Pointer(&n))
+		if num == 0 {
+			return
+		}
+		defer cfRelease(num)
+		cfDictionarySetValue(d, k, num)
+	}
+	set("VendorID", f.VendorID)
+	set("PrimaryUsagePage", f.UsagePage)
+	set("PrimaryUsage", f.Usage)
+	if len(f.ProductIDs) == 1 {
+		set("ProductID", f.ProductIDs[0])
+	}
+	return d
+}
+
+// darwinEnumerate lists the HID devices a filter asks for.
+//
+// It used to match EVERYTHING and narrow in Go, to avoid building a
+// CFDictionary for what is a handful of integer comparisons. That was wrong,
+// and the way it was wrong is worth keeping: IOHIDManagerOpen is all or
+// nothing over the matched set, so ONE device the process may not open makes
+// the whole enumeration fail and return nothing at all. Measured on a Mac with
+// two headsets and a dock: 186 HID services visible to hidutil, and this
+// returning kIOReturnUnsupported for every one of them.
+//
+// Matching narrowly asks macOS for the devices the caller actually wants, so an
+// unrelated one cannot veto them.
+func darwinEnumerate(f Filter) ([]Info, []uintptr, error) {
 	if err := load(); err != nil {
 		return nil, nil, err
 	}
@@ -208,7 +277,11 @@ func darwinEnumerate() ([]Info, []uintptr, error) {
 	}
 	defer cfRelease(mgr)
 
-	ioHIDManagerSetDeviceMatching(mgr, 0) // NULL: match every device
+	match := matchingDict(f)
+	if match != 0 {
+		defer cfRelease(match)
+	}
+	ioHIDManagerSetDeviceMatching(mgr, match) // 0 is NULL: every device
 	if err := ioErr("IOHIDManagerOpen", ioHIDManagerOpen(mgr, 0)); err != nil {
 		return nil, nil, err
 	}

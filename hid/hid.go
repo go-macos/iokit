@@ -141,7 +141,7 @@ func ioErr(op string, code int32) error {
 var (
 	// enumerate lists every HID device: parallel slices of description and
 	// retained native reference.
-	enumerate func() ([]Info, []uintptr, error)
+	enumerate func(Filter) ([]Info, []uintptr, error)
 	// openDev and closeDev open and close a native device, each returning an
 	// IOReturn code.
 	openDev  func(uintptr) int32
@@ -306,7 +306,7 @@ func (d *Device) SetReport(kind ReportKind, id byte, data []byte) error {
 // returned devices are retained handles the caller opens as needed and must
 // [Device.Close] when done.
 func Devices(f Filter) ([]*Device, error) {
-	infos, refs, err := enumerate()
+	infos, refs, err := enumerate(f)
 	if err != nil {
 		return nil, err
 	}
