@@ -21,6 +21,8 @@ const (
 	idxGetInterfaceNumber    = 17
 	idxGetNumEndpoints       = 19
 	idxGetPipeProperties     = 26
+	idxAbortPipe             = 28
+	idxReadPipe              = 31
 	idxReadPipeTO            = 39
 	idxWritePipeTO           = 40
 	idxUSBInterfaceOpenSeize = 44
@@ -262,24 +264,31 @@ func darwinPipes(tok uintptr) ([]Pipe, ioreturn.Code) {
 // noDataTimeout bounds the wait for the first byte and completionTimeout the
 // whole transfer; giving them the same value makes "nothing arrived in N
 // milliseconds" the single question being asked.
-func darwinReadPipe(tok uintptr, ref uint8, buf []byte, timeout time.Duration) (int, ioreturn.Code) {
+func darwinReadPipe(tok uintptr, ref uint8, buf []byte, timeout time.Duration) (int, string, ioreturn.Code) {
 	n := registryGet(tok)
 	if n == nil || n.dev == nil {
-		return 0, ioreturn.NotOpen
+		return 0, "ReadPipeTO", ioreturn.NotOpen
 	}
 	if len(buf) == 0 {
-		return 0, ioreturn.BadArgument
+		return 0, "ReadPipeTO", ioreturn.BadArgument
+	}
+	// IOUSBLib's timeout variants are BULK ONLY: an interrupt pipe is refused
+	// with kIOReturnBadArgument, before the request ever reaches the device.
+	// Asked BEFORE anything is allocated, so the two paths never share a
+	// buffer and neither can free the other's.
+	if t, code := pipeTypeOf(n, ref); code == ioreturn.Success && t == TransferInterrupt {
+		return darwinReadInterrupt(n, ref, buf, timeout)
 	}
 	data := cMalloc(uint64(len(buf)))
 	if data == nil {
-		return 0, ioreturn.NoMemory
+		return 0, "ReadPipeTO", ioreturn.NoMemory
 	}
 	defer cFree(data)
 	clear(unsafe.Slice((*byte)(data), len(buf)))
 
 	size := cMalloc(4)
 	if size == nil {
-		return 0, ioreturn.NoMemory
+		return 0, "ReadPipeTO", ioreturn.NoMemory
 	}
 	defer cFree(size)
 	*(*uint32)(size) = uint32(len(buf))
@@ -296,7 +305,7 @@ func darwinReadPipe(tok uintptr, ref uint8, buf []byte, timeout time.Duration) (
 		// half a kilobyte of data out of a device that said nothing, which is
 		// the single most expensive mistake this package could make. On any
 		// non-success code the count is therefore zero.
-		return 0, ioreturn.Code(rc)
+		return 0, "ReadPipeTO", ioreturn.Code(rc)
 	}
 	got := int(*(*uint32)(size))
 	if got > len(buf) {
@@ -305,7 +314,7 @@ func darwinReadPipe(tok uintptr, ref uint8, buf []byte, timeout time.Duration) (
 	if got > 0 {
 		copy(buf, unsafe.Slice((*byte)(data), got))
 	}
-	return got, ioreturn.Success
+	return got, "ReadPipeTO", ioreturn.Success
 }
 
 // darwinWritePipe writes with both timeouts set.
@@ -343,4 +352,95 @@ func timeoutMS(d time.Duration) uint32 {
 		return ^uint32(0)
 	}
 	return uint32(ms)
+}
+
+// pipeTypeOf asks what kind of pipe ref is, because the answer decides which
+// call can read it at all.
+func pipeTypeOf(n *native, ref uint8) (TransferType, ioreturn.Code) {
+	const (
+		offMaxPacket = 0 // uint16
+		offDir       = 2
+		offNumber    = 3
+		offType      = 4
+		offInterval  = 5
+		blockSize    = 8
+	)
+	block := cMalloc(blockSize)
+	if block == nil {
+		return 0, ioreturn.NoMemory
+	}
+	defer cFree(block)
+	b := unsafe.Slice((*byte)(block), blockSize)
+	clear(b)
+	rc := vcall(n.dev, idxGetPipeProperties,
+		uintptr(ref),
+		uintptr(unsafe.Add(block, offDir)),
+		uintptr(unsafe.Add(block, offNumber)),
+		uintptr(unsafe.Add(block, offType)),
+		uintptr(block),
+		uintptr(unsafe.Add(block, offInterval)),
+	)
+	if rc != 0 {
+		return 0, ioreturn.Code(rc)
+	}
+	return TransferType(b[offType]), ioreturn.Success
+}
+
+// darwinReadInterrupt reads a pipe that ReadPipeTO will not touch.
+//
+// IOUSBLib's timeout variants are BULK ONLY. Asked to read an interrupt pipe,
+// ReadPipeTO answers kIOReturnBadArgument -- rejected before it reaches the
+// device -- which is indistinguishable, to a caller that ignores errors, from a
+// device with nothing to say. That is how a probe came to report an XR headset
+// silent on the two endpoints most likely to carry its state.
+//
+// The plain ReadPipe has no timeout and blocks until the device sends
+// something, which for an interrupt IN endpoint may be never. So it runs on its
+// own goroutine and AbortPipe cancels it -- the cancellation Apple documents --
+// leaving the caller with the same "nothing arrived in N milliseconds" answer a
+// bulk read gives.
+func darwinReadInterrupt(n *native, ref uint8, buf []byte, timeout time.Duration) (int, string, ioreturn.Code) {
+	data := cMalloc(uint64(len(buf)))
+	if data == nil {
+		return 0, "ReadPipe", ioreturn.NoMemory
+	}
+	defer cFree(data)
+	clear(unsafe.Slice((*byte)(data), len(buf)))
+
+	size := cMalloc(4)
+	if size == nil {
+		return 0, "ReadPipe", ioreturn.NoMemory
+	}
+	defer cFree(size)
+	*(*uint32)(size) = uint32(len(buf))
+
+	type result struct {
+		rc int32
+	}
+	done := make(chan result, 1)
+	go func() {
+		done <- result{rc: int32(vcall(n.dev, idxReadPipe, uintptr(ref), uintptr(data), uintptr(size)))}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case r := <-done:
+		if r.rc != 0 {
+			return 0, "ReadPipe", ioreturn.Code(r.rc)
+		}
+	case <-timer.C:
+		// Abort, then REAP: the goroutine still holds the buffers this function
+		// is about to free, so returning without waiting for it would free
+		// memory the kernel may still be writing into.
+		vcall(n.dev, idxAbortPipe, uintptr(ref))
+		<-done
+		return 0, "ReadPipe", ioreturn.USBTransactionTimeout
+	}
+	got := int(*(*uint32)(size))
+	if got > len(buf) {
+		got = len(buf)
+	}
+	copy(buf, unsafe.Slice((*byte)(data), got))
+	return got, "ReadPipe", ioreturn.Success
 }

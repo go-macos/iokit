@@ -153,9 +153,12 @@ var (
 	openIface       func(tok uintptr, seize bool) ioreturn.Code
 	closeIface      func(tok uintptr) ioreturn.Code
 	ifacePipes      func(tok uintptr) ([]Pipe, ioreturn.Code)
-	pipeRead        func(tok uintptr, ref uint8, buf []byte, timeout time.Duration) (int, ioreturn.Code)
-	pipeWrite       func(tok uintptr, ref uint8, buf []byte, timeout time.Duration) (int, ioreturn.Code)
-	releaseIface    func(tok uintptr)
+	// pipeRead returns the name of the call it MADE alongside its result: an
+	// interrupt pipe is read by a different one than a bulk pipe, and an error
+	// naming the wrong call sends the next reader to the wrong documentation.
+	pipeRead     func(tok uintptr, ref uint8, buf []byte, timeout time.Duration) (int, string, ioreturn.Code)
+	pipeWrite    func(tok uintptr, ref uint8, buf []byte, timeout time.Duration) (int, ioreturn.Code)
+	releaseIface func(tok uintptr)
 )
 
 // InterfaceHandle is one USB interface of one device.
@@ -274,8 +277,8 @@ func (i *InterfaceHandle) Read(ref uint8, buf []byte, timeout time.Duration) (in
 	if i.ref == 0 {
 		return 0, ErrReleased
 	}
-	n, code := pipeRead(i.ref, ref, buf, timeout)
-	return n, ioErr("ReadPipeTO", code)
+	n, op, code := pipeRead(i.ref, ref, buf, timeout)
+	return n, ioErr(op, code)
 }
 
 // Write writes to a pipe. Success means the device's controller ACKed the
