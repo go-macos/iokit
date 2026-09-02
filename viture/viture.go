@@ -3,10 +3,14 @@
 // The protocol is not published by the manufacturer. What is encoded here comes
 // from the community reverse-engineering write-up in
 // bfvogel/viture-webxr-extension (VITURE_PROTOCOL.md), and it is confirmed to
-// work only up to the VITURE Pro (product 0x101D). Newer generations -- Luma
-// Ultra 0x1104, Beast 0x1201 -- accept these packets on their HID interface and
-// answer nothing at all, so treat this package as a hypothesis to test against
-// hardware, not as a specification.
+// work only up to the VITURE Pro (product 0x101D).
+//
+// Newer generations do NOT speak it. A Beast (0x1201) accepts these packets on
+// every one of its three HID interfaces -- including padded to the full 64-byte
+// report -- and answers none of them. That silence was once recorded here as
+// "the glasses answer nothing at all"; it is now known to be the wrong
+// conclusion. They answer readily, in a DIFFERENT frame, which beast.go
+// describes and which was read off the wire rather than guessed.
 //
 // Everything here is pure byte manipulation with no I/O, so which transport
 // carries a packet -- a HID report, a USB control transfer, a CDC-ACM serial
