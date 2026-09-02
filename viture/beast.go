@@ -52,11 +52,46 @@ const (
 	KindNotify2 byte = 0x73
 )
 
-// MsgToggle is a message that carries one and then zero, seen bracketing a mode
-// change. What it toggles is NOT known -- the electrochromic dimming and the
-// button itself are both plausible -- and it is named for what it does rather
-// than for what it might mean.
-const MsgToggle byte = 0x21
+// The messages, each identified by provoking ONE function at a time and
+// reading the clock.
+//
+// The manufacturer's SDK exposes exactly six things -- brightness, volume,
+// display mode, electrochromic film, native 3DOF and wear status -- and
+// wheaney/XRLinuxDriver publishes that list. On 2026-09-02 each was exercised
+// in turn, five seconds apart, while this package listened. Every one of the
+// six announced itself, and the spacing is what makes the mapping an
+// observation rather than a guess.
+//
+// Two of them corroborate independently of the order they were done in:
+// MsgDisplayMode was already known from the Mac's own display list changing
+// with it, and MsgWearStatus read 1 from the first second -- the glasses were
+// being worn -- and then 0, 1, 0 as they were taken off and put back on.
+const (
+	// MsgBrightness carries the brightness step. Seen 1, 2, 1, 0 while it was
+	// raised twice and lowered twice.
+	MsgBrightness byte = 0x01
+	// MsgWearStatus is 1 while the glasses are on a face and 0 when they are
+	// not. It is the one message that moves without anybody pressing anything.
+	MsgWearStatus byte = 0x21
+	// MsgAmbient moves on its own, and is NOT one of the six. It stepped
+	// between 3 and 6 at moments nobody touched a control, including while the
+	// electrochromic film was changing -- which is what an ambient light
+	// reading, or an automatic dimming responding to one, would do. Named for
+	// what it appears to track, and this comment is the whole of the evidence.
+	MsgAmbient byte = 0x22
+	// MsgVolume carries the volume step, 0 to 8. Seen ramping all the way up
+	// and all the way back down.
+	MsgVolume byte = 0x30
+	// MsgElectrochromic carries the opacity of the film: 0, 1 and 2 were seen.
+	MsgElectrochromic byte = 0x43
+	// MsgNativeDOF is 1 when the glasses anchor their picture in space and 0
+	// when it follows the head.
+	//
+	// It went to 0 in the same second the display entered 3D, without being
+	// asked: the two appear to be mutually exclusive on this hardware, which is
+	// worth knowing before offering both at once in a menu.
+	MsgNativeDOF byte = 0x44
+)
 
 // MsgDisplayMode is the message that carries the display mode.
 //

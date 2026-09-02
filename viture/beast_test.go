@@ -23,9 +23,34 @@ func TestParseEventReadsTheFrameSeenOnTheWire(t *testing.T) {
 			Event{Counter: 0x04, ID: MsgDisplayMode, Kind: KindNotify, Value: Mode1920x1080At60},
 		},
 		{
-			"the toggle that brackets it",
+			"the glasses being worn",
 			[]byte{0x10, 0x00, 0x21, 0x73, 0x01, 0x00, 0x01, 0x00},
-			Event{Counter: 0x00, ID: MsgToggle, Kind: KindNotify2, Value: 1},
+			Event{Counter: 0x00, ID: MsgWearStatus, Kind: KindNotify2, Value: 1},
+		},
+		{
+			// Volume ramps in nine steps; brightness in three. Keeping one of
+			// each means the identifiers cannot be swapped without a test
+			// saying so.
+			"the volume, most of the way up",
+			[]byte{0x10, 0x0a, 0x30, 0x73, 0x01, 0x00, 0x08, 0x00},
+			Event{Counter: 0x0a, ID: MsgVolume, Kind: KindNotify2, Value: 8},
+		},
+		{
+			"the brightness, one step up",
+			[]byte{0x10, 0x03, 0x01, 0x72, 0x01, 0x00, 0x02, 0x00},
+			Event{Counter: 0x03, ID: MsgBrightness, Kind: 0x72, Value: 2},
+		},
+		{
+			// It went to zero unasked, in the same second the display entered
+			// 3D. The two look mutually exclusive on this hardware.
+			"the spatial anchoring giving way to 3D",
+			[]byte{0x10, 0x00, 0x44, 0x71, 0x01, 0x00, 0x00, 0x00},
+			Event{Counter: 0x00, ID: MsgNativeDOF, Kind: KindNotify, Value: 0},
+		},
+		{
+			"the electrochromic film",
+			[]byte{0x10, 0x00, 0x43, 0x71, 0x01, 0x00, 0x02, 0x00},
+			Event{Counter: 0x00, ID: MsgElectrochromic, Kind: KindNotify, Value: 2},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
