@@ -106,6 +106,16 @@ func (e *IOError) Error() string {
 		name = " (exclusive access: another process holds the device)"
 	case ioReturnUnsupportedOp:
 		name = " (unsupported: the device has no such report channel)"
+		if e.Op == "IOHIDManagerOpen" {
+			// Nothing is being asked of a device yet, so "no such report
+			// channel" cannot be what happened -- and reading it that way costs
+			// an hour looking at the wrong end. macOS refuses to open the HID
+			// manager at all when the process may not watch input, and this is
+			// what that refusal looks like.
+			name = " (unsupported: macOS would not open the HID manager at all," +
+				" which is what a missing Input Monitoring consent looks like —" +
+				" System Settings, Privacy & Security, Input Monitoring)"
+		}
 	case ioReturnInternalError:
 		name = " (internal: the IOKit frameworks could not be loaded)"
 	}

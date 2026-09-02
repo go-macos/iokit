@@ -380,3 +380,28 @@ func TestBufSize(t *testing.T) {
 		}
 	}
 }
+
+func TestUnsupportedMeansSomethingElseOnTheManager(t *testing.T) {
+	// The same IOReturn means two very different things depending on what was
+	// being attempted, and saying the device one for a MANAGER failure sends
+	// the reader to the wrong end of the problem. It did, for an hour.
+	dev := (&IOError{Op: "IOHIDDeviceSetReport", Code: ioReturnUnsupportedOp}).Error()
+	mgr := (&IOError{Op: "IOHIDManagerOpen", Code: ioReturnUnsupportedOp}).Error()
+
+	if !strings.Contains(dev, "report channel") {
+		t.Errorf("on a device: %q", dev)
+	}
+	if strings.Contains(mgr, "report channel") {
+		t.Errorf("on the manager, still talking about a report channel: %q", mgr)
+	}
+	if !strings.Contains(mgr, "Input Monitoring") {
+		t.Errorf("on the manager, no mention of the consent that is nearly always the cause: %q", mgr)
+	}
+	// Both must still carry the operation and the raw code, because the
+	// explanation is a guess and the number is not.
+	for _, s := range []string{dev, mgr} {
+		if !strings.Contains(s, "0xe00002c7") {
+			t.Errorf("the raw IOReturn is missing from %q", s)
+		}
+	}
+}
