@@ -52,6 +52,26 @@ const (
 	KindNotify2 byte = 0x73
 )
 
+// More kinds, seen on 2026-09-02 while the manufacturer's own application held
+// a session open and every control was worked in turn.
+//
+// The reply kinds are not one value but four: which one comes back appears to
+// depend on the shape of the answer rather than on the question, since the same
+// message id was answered with different ones. KindAck is what came back when
+// the application APPLIED a setting rather than asked for one.
+//
+// These are named because they were SEEN. Nothing here claims to know the rule.
+const (
+	KindReplyB byte = 0x51
+	KindReplyC byte = 0x52
+	KindReplyD byte = 0x54
+	// KindNotify3 carried MsgBrightness, where volume and wear status came on
+	// KindNotify2 and the ambient, mode and film messages on KindNotify. The
+	// three announcement kinds therefore do NOT split by message id alone.
+	KindNotify3 byte = 0x72
+	KindAck     byte = 0x21
+)
+
 // The messages, each identified by provoking ONE function at a time and
 // reading the clock.
 //

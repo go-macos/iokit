@@ -1,6 +1,9 @@
 package viture
 
-import "testing"
+import (
+	"encoding/hex"
+	"testing"
+)
 
 func TestParseEventReadsTheFrameSeenOnTheWire(t *testing.T) {
 	// Captured from a VITURE Beast on 2026-09-01, at the second its display
@@ -131,5 +134,75 @@ func TestModeNameSaysPlainlyWhenItDoesNotKnow(t *testing.T) {
 	}
 	if got := ModeName(0x99); got != "an unnamed mode" {
 		t.Errorf("an unknown mode is called %q", got)
+	}
+}
+
+// The frames below are REAL: captured on 2026-09-02 from a Beast, as a second
+// HID client, while the manufacturer's application held a session open and each
+// control was worked in turn. They are kept verbatim -- trailing zeroes and all
+// -- because a fixture that has been tidied is no longer evidence.
+var capturedBeastFrames = []struct {
+	name  string
+	hex   string
+	id    byte
+	kind  byte
+	value uint16
+}{
+	{"brightness stepping up", "1029017201000700070000000000000000000000", MsgBrightness, KindNotify3, 7},
+	{"volume stepping up", "1032307301000800080000000000000000000000", MsgVolume, KindNotify2, 8},
+	{"glasses put on", "1003217301000100010000000000000000000000", MsgWearStatus, KindNotify2, 1},
+	{"glasses taken off", "1038217301000000000000000000000000000000", MsgWearStatus, KindNotify2, 0},
+	{"ambient light", "1037227101000600060000000000000000000000", MsgAmbient, KindNotify, 6},
+	{"the film going clear", "1034437101000000000000000000000000000000", MsgElectrochromic, KindNotify, 0},
+	{"the film going dark", "1033437101000200020000000000000000000000", MsgElectrochromic, KindNotify, 2},
+	{"a display mode", "1002427101003d003d00000000000000000000000000", MsgDisplayMode, KindNotify, 0x3d},
+}
+
+func TestParseEventOnFramesFromRealGlasses(t *testing.T) {
+	for _, c := range capturedBeastFrames {
+		t.Run(c.name, func(t *testing.T) {
+			b, err := hex.DecodeString(c.hex)
+			if err != nil {
+				t.Fatalf("the fixture is not hex: %v", err)
+			}
+			ev, ok := ParseEvent(b)
+			if !ok {
+				t.Fatalf("a frame this device really sent was refused")
+			}
+			if ev.ID != c.id {
+				t.Errorf("message id %#02x, want %#02x", ev.ID, c.id)
+			}
+			if ev.Kind != c.kind {
+				t.Errorf("kind %#02x, want %#02x", ev.Kind, c.kind)
+			}
+			if ev.Value != c.value {
+				t.Errorf("value %d, want %d", ev.Value, c.value)
+			}
+		})
+	}
+}
+
+// TestTheThreeAnnouncementKindsDoNotSplitByMessage records what the capture
+// showed and what it did NOT: brightness announced itself on one kind, volume
+// and wear status on another, and three more messages on a third. Whoever
+// eventually finds the rule should find this test in their way if they assume a
+// simpler one.
+func TestTheThreeAnnouncementKindsDoNotSplitByMessage(t *testing.T) {
+	seen := map[byte]byte{}
+	for _, c := range capturedBeastFrames {
+		if prev, ok := seen[c.id]; ok && prev != c.kind {
+			t.Errorf("message %#02x was announced with both %#02x and %#02x", c.id, prev, c.kind)
+		}
+		seen[c.id] = c.kind
+	}
+	kinds := map[byte]bool{}
+	for _, k := range seen {
+		kinds[k] = true
+	}
+	if len(kinds) < 3 {
+		t.Errorf("the capture shows %d announcement kind(s); it showed three, so a fixture has been lost", len(kinds))
+	}
+	if seen[MsgBrightness] == seen[MsgVolume] {
+		t.Error("brightness and volume announced on the SAME kind, which the capture contradicts")
 	}
 }
