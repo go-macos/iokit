@@ -52,6 +52,26 @@ const (
 	KindNotify2 byte = 0x73
 )
 
+// More kinds, seen on 2026-09-02 while the manufacturer's own application held
+// a session open and every control was worked in turn.
+//
+// The reply kinds are not one value but four: which one comes back appears to
+// depend on the shape of the answer rather than on the question, since the same
+// message id was answered with different ones. KindAck is what came back when
+// the application APPLIED a setting rather than asked for one.
+//
+// These are named because they were SEEN. Nothing here claims to know the rule.
+const (
+	KindReplyB byte = 0x51
+	KindReplyC byte = 0x52
+	KindReplyD byte = 0x54
+	// KindNotify3 carried MsgBrightness, where volume and wear status came on
+	// KindNotify2 and the ambient, mode and film messages on KindNotify. The
+	// three announcement kinds therefore do NOT split by message id alone.
+	KindNotify3 byte = 0x72
+	KindAck     byte = 0x21
+)
+
 // The messages, each identified by provoking ONE function at a time and
 // reading the clock.
 //
@@ -95,37 +115,50 @@ const (
 
 // The two messages that carry a display mode.
 //
-// ⭐ THERE ARE TWO, AND ONE OF THEM TAKES ORDERS. MsgDisplayMode is the one a
-// host sets and reads -- setDisplayMode 0x0124 and getDisplayMode 0x3124 in
-// SpaceWalker's disassembled table -- and writing 0x32 to it put a Beast into
-// side-by-side 3D, with the Mac's display list changing to 3840x1080 in the
-// same second and 0x31 bringing it back. MsgNativeDisplayMode is the headset's
-// own native mode, which is what ANNOUNCES itself when the button is pressed.
+// ⭐ THERE ARE TWO, AND THEY ARE NOT A CONTRADICTION. The glasses hold two
+// settings that both describe what is in front of the eyes, and both were seen
+// at once on 2026-09-05 with the display at 3840x1080: MsgDisplayMode reported
+// 0x32 (Mode3840x1080At60) and MsgNativeDisplayMode reported 0x37
+// (NativeMode3DSBS3840x1080At60). SpaceWalker names them apart too --
+// R6SetDisplayModeHIDMsg and R6NewerNativeDisplayModeHIDMsg -- and the msgIDs
+// disassembled out of it, 0x0124 and 0x0142, have exactly these low bytes.
 //
-// Both were seen at once with the display at 3840x1080: 0x24 reported 0x32 and
-// 0x42 reported 0x37. Two settings describing one picture, not a contradiction.
+// Identified by CORRELATION rather than by guessing, twice over and months
+// apart. On 2026-09-02 MsgNativeDisplayMode reported 0x3A -- exactly
+// NativeMode3DSBS3840x1200At60 -- as the Mac's display list changed to
+// 3840x1200 in the same second, and 0x31 on the way back. On 2026-09-05 it
+// went 0x31 then 0x37 as the display became 3840x1080.
 const (
-	MsgDisplayMode       byte = 0x24
+	// MsgDisplayMode is the mode a host sets and reads: setDisplayMode 0x0124,
+	// getDisplayMode 0x3124.
+	// ⭐ AND ONE OF THEM TAKES ORDERS. Writing 0x32 to MsgDisplayMode put a
+	// Beast into side-by-side 3D -- the Mac's display list changed to
+	// 3840x1080 in the same second, its model number 0x120 to 0x220 -- and
+	// 0x31 brought it back. See SetDisplayMode.
+	MsgDisplayMode byte = 0x24
+	// MsgNativeDisplayMode is the headset's own native mode, 0x0142. It is the
+	// one that ANNOUNCES itself when the button is pressed.
 	MsgNativeDisplayMode byte = 0x42
 )
-
-// (the note below is the older correlation, kept because it is evidence)
-//
-//
-// Identified by CORRELATION rather than by guessing: while the glasses were
-// switched into 3D, this message reported 0x3A -- exactly
-// NativeMode3DSBS3840x1200At60 below -- and the display the Mac saw changed to
-// 3840x1200 in the same second. Switched back, the same message reported 0x31,
-// which is Mode1920x1080At60.
 
 // Event is one frame from the glasses.
 type Event struct {
 	// Counter increments once per message. It is the only thing that says two
 	// identical readings are two events rather than one seen twice.
 	Counter byte
-	// ID says what the message is about; MsgDisplayMode is the one named here.
+	// ID says what the message is about; the two display-mode messages are
+	// named above.
 	ID byte
 	// Kind separates a reply from an announcement.
+	//
+	// ⛔ ITS RULE IS NOT KNOWN, and a plausible one has already been tried and
+	// refused. It looked like the high byte of a 16-bit identifier whose top
+	// nibble is a direction -- SpaceWalker's disassembled table does read that
+	// way, giving getBrightness 0x3122 and setBrightness 0x0122. But the frames
+	// captured from these glasses announce brightness with 0x72, volume with
+	// 0x73 and the ambient reading with 0x71: three values for what is plainly
+	// the same direction, which that rule cannot explain. See
+	// TestTheThreeAnnouncementKindsDoNotSplitByMessage.
 	Kind byte
 	// Value is the message's value, which for MsgDisplayMode is a display mode.
 	Value uint16

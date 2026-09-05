@@ -55,7 +55,7 @@ func TestInterfaceStubsAreWiredAndUnsupported(t *testing.T) {
 		"openIface":  openIface(0, false),
 		"closeIface": closeIface(0),
 		"ifacePipes": func() ioreturn.Code { _, c := ifacePipes(0); return c }(),
-		"pipeRead":   func() ioreturn.Code { _, c := pipeRead(0, 1, nil, time.Second); return c }(),
+		"pipeRead":   func() ioreturn.Code { _, _, c := pipeRead(0, 1, nil, time.Second); return c }(),
 		"pipeWrite":  func() ioreturn.Code { _, c := pipeWrite(0, 1, nil, time.Second); return c }(),
 	} {
 		if got != ioreturn.Unsupported {

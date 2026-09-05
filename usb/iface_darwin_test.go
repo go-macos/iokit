@@ -24,7 +24,7 @@ func TestIfaceSeamsRejectUnknownTokens(t *testing.T) {
 	if _, got := darwinPipes(bogus); got == 0 {
 		t.Errorf("darwinPipes(bogus) = %v, want a failure code", got)
 	}
-	if _, got := darwinReadPipe(bogus, 1, make([]byte, 4), 0); got == 0 {
+	if _, _, got := darwinReadPipe(bogus, 1, make([]byte, 4), 0); got == 0 {
 		t.Errorf("darwinReadPipe(bogus) = %v, want a failure code", got)
 	}
 	if _, got := darwinWritePipe(bogus, 1, []byte{1}, 0); got == 0 {
@@ -40,7 +40,7 @@ func TestReadPipeRejectsAnEmptyBuffer(t *testing.T) {
 	tok := registryAdd(n)
 	t.Cleanup(func() { registryDrop(tok) })
 	n.dev = nil
-	if _, code := darwinReadPipe(tok, 1, nil, 0); code == 0 {
+	if _, _, code := darwinReadPipe(tok, 1, nil, 0); code == 0 {
 		t.Error("a nil buffer should be refused")
 	}
 }
