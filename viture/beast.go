@@ -93,12 +93,22 @@ const (
 	// MsgWearStatus is 1 while the glasses are on a face and 0 when they are
 	// not. It is the one message that moves without anybody pressing anything.
 	MsgWearStatus byte = 0x21
-	// MsgAmbient moves on its own, and is NOT one of the six. It stepped
-	// between 3 and 6 at moments nobody touched a control, including while the
-	// electrochromic film was changing -- which is what an ambient light
-	// reading, or an automatic dimming responding to one, would do. Named for
-	// what it appears to track, and this comment is the whole of the evidence.
-	MsgAmbient byte = 0x22
+	// MsgDisplayBrightness is the SETTABLE brightness of the display, 0 to 8.
+	//
+	// ⛔ IT WAS CALLED MsgDisplayBrightness AND THAT WAS WRONG. The old comment read
+	// "moves on its own... which is what an ambient light reading would do.
+	// Named for what it appears to track, and this comment is the whole of the
+	// evidence" -- an honest hedge, and refuted on 2026-09-05 by writing it:
+	// set to 3 and read back 3, set to 7 and read back 7, and the display
+	// changed. A sweep found the edges the same way, with no watching at all:
+	// accepted from 0 to 8, REFUSED from 9 up. The disassembly agrees --
+	// SpaceWalker names setBrightness = 0x0122.
+	//
+	// ⚠ WHETHER IT IS THE SAME QUANTITY AS [MsgBrightness] IS NOT ESTABLISHED.
+	// 0x01 is what the headset ANNOUNCES when the button on the arm is pressed;
+	// this is what it accepts being told. They may be one setting seen from two
+	// sides, and nothing here has shown that.
+	MsgDisplayBrightness byte = 0x22
 	// MsgVolume carries the volume step, 0 to 8. Seen ramping all the way up
 	// and all the way back down.
 	MsgVolume byte = 0x30
