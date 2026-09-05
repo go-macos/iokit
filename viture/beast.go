@@ -131,6 +131,10 @@ const (
 const (
 	// MsgDisplayMode is the mode a host sets and reads: setDisplayMode 0x0124,
 	// getDisplayMode 0x3124.
+	// ⭐ AND ONE OF THEM TAKES ORDERS. Writing 0x32 to MsgDisplayMode put a
+	// Beast into side-by-side 3D -- the Mac's display list changed to
+	// 3840x1080 in the same second, its model number 0x120 to 0x220 -- and
+	// 0x31 brought it back. See SetDisplayMode.
 	MsgDisplayMode byte = 0x24
 	// MsgNativeDisplayMode is the headset's own native mode, 0x0142. It is the
 	// one that ANNOUNCES itself when the button is pressed.
@@ -269,3 +273,81 @@ func ModeName(mode uint16) string {
 	}
 	return "an unnamed mode"
 }
+
+// The direction a frame carries, in byte 3 of a report.
+//
+// ⭐ MEASURED, by sweeping the byte and reading what came back. The device
+// answers EVERY well-formed report, and its answer is the request's byte 3 plus
+// 0x20: a read on 0x31 is answered on 0x51, a write on 0x01 on 0x21. Twelve
+// values were tried and eleven were answered; only 0x11 is silent.
+const (
+	// DirWrite sets a value. The reply carries a STATUS, not the value.
+	DirWrite byte = 0x01
+	// DirRead asks for one. The reply carries the value.
+	DirRead byte = 0x31
+	// ReplyBit is what the device adds to a request's direction to make the
+	// reply's: 0x31 is answered on 0x51.
+	ReplyBit byte = 0x20
+)
+
+// What a write is answered with.
+//
+// ⛔ THIS IS THE INSTRUMENT THAT MATTERS. Nineteen attempts to set a display
+// mode were judged by whether the Mac's screen changed, which cannot tell
+// "refused" from "not understood" from "never arrived" -- and every one of them
+// looked identical. The device says which, immediately, on every write.
+const (
+	// StatusOK means the command was taken.
+	StatusOK uint16 = 0
+	// StatusRefused is a well-formed command this device will not take: a mode
+	// its panel does not have, for instance. 0x33 (120 Hz) and 0x51
+	// (ultrawide) come back with this on a Beast.
+	StatusRefused uint16 = 4
+	// StatusTooShort is a length byte below two.
+	StatusTooShort uint16 = 6
+)
+
+// SetDisplayMode is the report that puts the glasses into a display mode.
+//
+// ⭐ THE VALUE IS WRITTEN TWICE, LITTLE-ENDIAN, PACKED -- and that one detail is
+// what nineteen failures had wrong. The device's own REPLIES carry a value
+// little-endian and then again BIG-endian, so that shape was copied into the
+// command; it is answered with StatusRefused. Written 32 00 32 00 with the
+// length byte 0x02, the same command is answered StatusOK and the Mac's display
+// list changes to 3840x1080 in the same second.
+//
+// A reply and a command are not the same frame. Reading one to build the other
+// is what cost the nineteen.
+//
+// The report is 64 bytes because that is what the descriptor advertises;
+// [MsgDisplayMode] and the mode constants say what may go in it.
+func SetDisplayMode(mode uint16) []byte {
+	return command(MsgDisplayMode, 0x02, mode)
+}
+
+// ReadDisplayMode is the report that asks which mode the glasses are in.
+//
+// ⛔ A READ CHANGES NOTHING, which is what makes it the right first experiment
+// on any device: it is safe to repeat, and its success is visible in a way a
+// command's is not. It was a read that proved these reports reach the glasses
+// at all, after nineteen writes had failed to say so either way.
+func ReadDisplayMode() []byte { return command(MsgDisplayMode, 0x03, 0) }
+
+// command builds a report of this generation.
+func command(msg, length byte, value uint16) []byte {
+	b := make([]byte, ReportSize)
+	dir := DirWrite
+	if length == 0x03 && value == 0 {
+		dir = DirRead
+	}
+	copy(b, []byte{
+		EventHeader, 0x00, msg, dir, length, 0x00,
+		byte(value), byte(value >> 8),
+		byte(value), byte(value >> 8),
+	})
+	return b
+}
+
+// ReportSize is how many bytes a report to this device carries, from its own
+// descriptor.
+const ReportSize = 64
