@@ -239,7 +239,7 @@ var capturedBeastFrames = []struct {
 	{"volume stepping up", "1032307301000800080000000000000000000000", MsgVolume, KindNotify2, 8},
 	{"glasses put on", "1003217301000100010000000000000000000000", MsgWearStatus, KindNotify2, 1},
 	{"glasses taken off", "1038217301000000000000000000000000000000", MsgWearStatus, KindNotify2, 0},
-	{"ambient light", "1037227101000600060000000000000000000000", MsgAmbient, KindNotify, 6},
+	{"the settable display brightness", "1037227101000600060000000000000000000000", MsgDisplayBrightness, KindNotify, 6},
 	{"the film going clear", "1034437101000000000000000000000000000000", MsgElectrochromic, KindNotify, 0},
 	{"the film going dark", "1033437101000200020000000000000000000000", MsgElectrochromic, KindNotify, 2},
 	{"a display mode", "1002427101003d003d00000000000000000000000000", MsgNativeDisplayMode, KindNotify, 0x3d},
