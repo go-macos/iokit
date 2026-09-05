@@ -1,5 +1,23 @@
 // Package viture builds and parses the classic VITURE XR glasses MCU protocol.
 //
+// # THE GLASSES SAY NOTHING UNTIL A SESSION IS OPEN
+//
+// Measured on 2026-09-02, and it cost a day. A Beast that is plugged in,
+// enumerating normally, showing a picture, whose vendor HID interface opens
+// without error, will send NOT ONE report -- through button presses, through
+// being worn and taken off, through two factory resets. It looks exactly like a
+// headset whose microcontroller has died, and it was diagnosed as one.
+//
+// It had not. Launching the manufacturer's own application produced sixteen
+// reports in seconds, and then a report per button press. The MCU only speaks
+// once something has opened a session with it, the same way the Luma's inertial
+// unit stays quiet until an explicit "open IMU control".
+//
+// So: a silence measured WITHOUT a session open says nothing about the
+// hardware. Before concluding anything from silence, open a session -- or run
+// the vendor application and listen as a second client, which macOS allows and
+// which is how the observations below were made.
+//
 // The protocol is not published by the manufacturer. What is encoded here comes
 // from the community reverse-engineering write-up in
 // bfvogel/viture-webxr-extension (VITURE_PROTOCOL.md), and it is confirmed to

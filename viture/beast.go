@@ -52,6 +52,26 @@ const (
 	KindNotify2 byte = 0x73
 )
 
+// More kinds, seen on 2026-09-02 while the manufacturer's own application held
+// a session open and every control was worked in turn.
+//
+// The reply kinds are not one value but four: which one comes back appears to
+// depend on the shape of the answer rather than on the question, since the same
+// message id was answered with different ones. KindAck is what came back when
+// the application APPLIED a setting rather than asked for one.
+//
+// These are named because they were SEEN. Nothing here claims to know the rule.
+const (
+	KindReplyB byte = 0x51
+	KindReplyC byte = 0x52
+	KindReplyD byte = 0x54
+	// KindNotify3 carried MsgBrightness, where volume and wear status came on
+	// KindNotify2 and the ambient, mode and film messages on KindNotify. The
+	// three announcement kinds therefore do NOT split by message id alone.
+	KindNotify3 byte = 0x72
+	KindAck     byte = 0x21
+)
+
 // The messages, each identified by provoking ONE function at a time and
 // reading the clock.
 //
@@ -117,40 +137,24 @@ const (
 	MsgNativeDisplayMode byte = 0x42
 )
 
-// Direction is what a message is: the HIGH byte of its 16-bit msgID.
-//
-// ⭐ THE FRAME CARRIES A 16-BIT msgID SPLIT ACROSS TWO BYTES. Byte 2 of a
-// report is its LOW byte and byte 3 its HIGH byte, which is why what looked
-// like an opaque "kind" is a direction: the disassembled table in SpaceWalker
-// gives 0x0 for write, 0x3 for read and 0x7 for notify, a pattern that holds
-// over all forty of its entries, and the wire adds the fourth -- 0x5, a reply,
-// which the application only ever RECEIVES and therefore does not name.
-//
-// So getBrightness is 0x3122, setBrightness 0x0122, and a brightness reading
-// arrives as byte 2 = 0x22 with byte 3 = 0x51.
-type Direction byte
-
-const (
-	// DirWrite is a command from the host.
-	DirWrite Direction = 0x0
-	// DirRead is a question from the host.
-	DirRead Direction = 0x3
-	// DirReply is the glasses answering one.
-	DirReply Direction = 0x5
-	// DirNotify is the glasses saying something changed, unasked.
-	DirNotify Direction = 0x7
-)
-
 // Event is one frame from the glasses.
 type Event struct {
 	// Counter increments once per message. It is the only thing that says two
 	// identical readings are two events rather than one seen twice.
 	Counter byte
-	// ID says what the message is about. It is the LOW byte of the message's
-	// 16-bit identifier; see [Direction] for the high one.
+	// ID says what the message is about; the two display-mode messages are
+	// named above.
 	ID byte
-	// Kind is the HIGH byte of the identifier, whose top nibble is the
-	// direction -- see [Event.Direction], which is the useful reading of it.
+	// Kind separates a reply from an announcement.
+	//
+	// ⛔ ITS RULE IS NOT KNOWN, and a plausible one has already been tried and
+	// refused. It looked like the high byte of a 16-bit identifier whose top
+	// nibble is a direction -- SpaceWalker's disassembled table does read that
+	// way, giving getBrightness 0x3122 and setBrightness 0x0122. But the frames
+	// captured from these glasses announce brightness with 0x72, volume with
+	// 0x73 and the ambient reading with 0x71: three values for what is plainly
+	// the same direction, which that rule cannot explain. See
+	// TestTheThreeAnnouncementKindsDoNotSplitByMessage.
 	Kind byte
 	// Value is the message's value, which for MsgDisplayMode is a display mode.
 	Value uint16
@@ -265,11 +269,3 @@ func ModeName(mode uint16) string {
 	}
 	return "an unnamed mode"
 }
-
-// Direction says what this message is: a command, a question, an answer or an
-// announcement. See [Direction].
-func (e Event) Direction() Direction { return Direction(e.Kind >> 4) }
-
-// MsgID is the message's whole 16-bit identifier, as SpaceWalker's own table
-// writes it: 0x3124 for getDisplayMode, 0x0122 for setBrightness.
-func (e Event) MsgID() uint16 { return uint16(e.Kind)<<8 | uint16(e.ID) }
