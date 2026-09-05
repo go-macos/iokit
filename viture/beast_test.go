@@ -18,12 +18,12 @@ func TestParseEventReadsTheFrameSeenOnTheWire(t *testing.T) {
 		{
 			"the switch into 3D",
 			[]byte{0x10, 0x00, 0x42, 0x71, 0x01, 0x00, 0x3a, 0x00, 0x3a, 0x00},
-			Event{Counter: 0x00, ID: MsgDisplayMode, Kind: KindNotify, Value: NativeMode3DSBS3840x1200At60},
+			Event{Counter: 0x00, ID: MsgNativeDisplayMode, Kind: KindNotify, Value: NativeMode3DSBS3840x1200At60},
 		},
 		{
 			"and back out of it",
 			[]byte{0x10, 0x04, 0x42, 0x71, 0x01, 0x00, 0x31, 0x00, 0x31, 0x00},
-			Event{Counter: 0x04, ID: MsgDisplayMode, Kind: KindNotify, Value: Mode1920x1080At60},
+			Event{Counter: 0x04, ID: MsgNativeDisplayMode, Kind: KindNotify, Value: Mode1920x1080At60},
 		},
 		{
 			"the glasses being worn",
@@ -155,7 +155,7 @@ var capturedBeastFrames = []struct {
 	{"ambient light", "1037227101000600060000000000000000000000", MsgAmbient, KindNotify, 6},
 	{"the film going clear", "1034437101000000000000000000000000000000", MsgElectrochromic, KindNotify, 0},
 	{"the film going dark", "1033437101000200020000000000000000000000", MsgElectrochromic, KindNotify, 2},
-	{"a display mode", "1002427101003d003d00000000000000000000000000", MsgDisplayMode, KindNotify, 0x3d},
+	{"a display mode", "1002427101003d003d00000000000000000000000000", MsgNativeDisplayMode, KindNotify, 0x3d},
 }
 
 func TestParseEventOnFramesFromRealGlasses(t *testing.T) {
@@ -204,5 +204,101 @@ func TestTheThreeAnnouncementKindsDoNotSplitByMessage(t *testing.T) {
 	}
 	if seen[MsgBrightness] == seen[MsgVolume] {
 		t.Error("brightness and volume announced on the SAME kind, which the capture contradicts")
+	}
+}
+
+// TestBothDisplayModeMessagesAreNamed.
+//
+// ⭐ THERE ARE TWO AND THEY ARE NOT A CONTRADICTION. Captured on 2026-09-05
+// with the display at 3840x1080, both were present in the same session:
+// MsgDisplayMode reported 0x32 (Mode3840x1080At60) and MsgNativeDisplayMode
+// reported 0x37 (NativeMode3DSBS3840x1080At60). The glasses hold two settings
+// that both describe what is in front of the eyes, and SpaceWalker names them
+// apart -- R6SetDisplayModeHIDMsg and R6NewerNativeDisplayModeHIDMsg.
+func TestBothDisplayModeMessagesAreNamed(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		frame []byte
+		id    byte
+		value uint16
+		is3D  bool
+	}{
+		{
+			"the display mode, in a reply",
+			[]byte{0x10, 0x00, 0x24, 0x51, 0x03, 0x00, 0x32, 0x00, 0x00, 0x32},
+			MsgDisplayMode, Mode3840x1080At60, true,
+		},
+		{
+			"the native mode, announced when the button was pressed",
+			[]byte{0x10, 0x01, 0x42, 0x71, 0x01, 0x00, 0x37, 0x00, 0x37},
+			MsgNativeDisplayMode, NativeMode3DSBS3840x1080At60, true,
+		},
+		{
+			"and back to 2D",
+			[]byte{0x10, 0x04, 0x42, 0x71, 0x01, 0x00, 0x31, 0x00, 0x31},
+			MsgNativeDisplayMode, Mode1920x1080At60, false,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, ok := ParseEvent(c.frame)
+			if !ok {
+				t.Fatal("a captured frame did not parse")
+			}
+			if e.ID != c.id {
+				t.Errorf("ID = %#02x, want %#02x", e.ID, c.id)
+			}
+			if e.Value != c.value {
+				t.Errorf("Value = %#x, want %#x", e.Value, c.value)
+			}
+			if Stereoscopic(e.Value) != c.is3D {
+				t.Errorf("Stereoscopic(%#x) = %v", e.Value, Stereoscopic(e.Value))
+			}
+		})
+	}
+}
+
+// TestTheLengthByteIsConstantPerMessage.
+//
+// ⛔ IT IS NOT THE PAYLOAD'S LENGTH, which is what its position invites anybody
+// to assume. Five announcements of the native mode were captured while the
+// button was pressed, alternating 0x31 and 0x37, and ALL carry 0x01 -- while a
+// display-mode reply carries 0x03 and an ambient reading 0x02, in frames of the
+// same shape and the same payload width. Whatever it means, it is a property of
+// the MESSAGE and not of the value, which is what somebody building a frame
+// needs to know.
+func TestTheLengthByteIsConstantPerMessage(t *testing.T) {
+	native := [][]byte{
+		{0x10, 0x00, 0x42, 0x71, 0x01, 0x00, 0x31, 0x00, 0x31},
+		{0x10, 0x01, 0x42, 0x71, 0x01, 0x00, 0x37, 0x00, 0x37},
+		{0x10, 0x04, 0x42, 0x71, 0x01, 0x00, 0x31, 0x00, 0x31},
+		{0x10, 0x05, 0x42, 0x71, 0x01, 0x00, 0x37, 0x00, 0x37},
+		{0x10, 0x07, 0x42, 0x71, 0x01, 0x00, 0x31, 0x00, 0x31},
+	}
+	values := map[uint16]bool{}
+	for _, f := range native {
+		if f[4] != 0x01 {
+			t.Errorf("a native-mode frame carries length %#02x", f[4])
+		}
+		e, ok := ParseEvent(f)
+		if !ok {
+			t.Fatalf("%02x did not parse", f)
+		}
+		values[e.Value] = true
+	}
+	if len(values) < 2 {
+		t.Error("every captured frame carried the same value, so this proves nothing " +
+			"about the length byte being independent of it")
+	}
+	// And two other messages, of the same shape, carrying other lengths.
+	for _, c := range []struct {
+		frame  []byte
+		length byte
+	}{
+		{[]byte{0x10, 0x00, 0x24, 0x51, 0x03, 0x00, 0x32, 0x00, 0x00, 0x32}, 0x03},
+		{[]byte{0x10, 0x00, 0x22, 0x51, 0x02, 0x00, 0x06, 0x00, 0x00, 0x06}, 0x02},
+	} {
+		if c.frame[4] != c.length {
+			t.Errorf("frame %02x carries length %#02x, want %#02x", c.frame, c.frame[4], c.length)
+		}
 	}
 }
