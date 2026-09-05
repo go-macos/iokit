@@ -15,12 +15,12 @@ func TestParseEventReadsTheFrameSeenOnTheWire(t *testing.T) {
 		{
 			"the switch into 3D",
 			[]byte{0x10, 0x00, 0x42, 0x71, 0x01, 0x00, 0x3a, 0x00, 0x3a, 0x00},
-			Event{Counter: 0x00, ID: MsgDisplayMode, Kind: KindNotify, Value: NativeMode3DSBS3840x1200At60},
+			Event{Counter: 0x00, ID: MsgNativeDisplayMode, Kind: KindNotify, Value: NativeMode3DSBS3840x1200At60},
 		},
 		{
 			"and back out of it",
 			[]byte{0x10, 0x04, 0x42, 0x71, 0x01, 0x00, 0x31, 0x00, 0x31, 0x00},
-			Event{Counter: 0x04, ID: MsgDisplayMode, Kind: KindNotify, Value: Mode1920x1080At60},
+			Event{Counter: 0x04, ID: MsgNativeDisplayMode, Kind: KindNotify, Value: Mode1920x1080At60},
 		},
 		{
 			"the glasses being worn",
@@ -131,5 +131,108 @@ func TestModeNameSaysPlainlyWhenItDoesNotKnow(t *testing.T) {
 	}
 	if got := ModeName(0x99); got != "an unnamed mode" {
 		t.Errorf("an unknown mode is called %q", got)
+	}
+}
+
+// TestTheMsgIDIsSixteenBitsAcrossTwoBytes.
+//
+// ⭐ What looked like an opaque "kind" is the HIGH byte of a 16-bit identifier
+// whose top nibble is the direction. It reconciles two decodings that seemed to
+// contradict each other: the table disassembled out of SpaceWalker, which gives
+// getBrightness 0x3122 and setBrightness 0x0122, and the reports seen on the
+// wire, where a brightness reading arrives as byte 2 = 0x22 with byte 3 = 0x51.
+func TestTheMsgIDIsSixteenBitsAcrossTwoBytes(t *testing.T) {
+	// A real frame, captured 2026-09-05: brightness, value 6.
+	e, ok := ParseEvent([]byte{0x10, 0x00, 0x22, 0x51, 0x02, 0x00, 0x06, 0x00, 0x00, 0x06})
+	if !ok {
+		t.Fatal("a captured frame did not parse")
+	}
+	if got := e.MsgID(); got != 0x5122 {
+		t.Errorf("MsgID = %#04x, want %#04x", got, 0x5122)
+	}
+	if got := e.Direction(); got != DirReply {
+		t.Errorf("Direction = %#x, want a reply", got)
+	}
+	// And the same message asked for and written would be 0x3122 and 0x0122 --
+	// the low byte is what identifies it, in every direction.
+	if e.ID != 0x22 {
+		t.Errorf("ID = %#02x", e.ID)
+	}
+}
+
+// TestBothDisplayModeMessagesAreNamed.
+//
+// ⭐ THERE ARE TWO AND THEY ARE NOT A CONTRADICTION. Captured on 2026-09-05
+// with the display at 3840x1080: MsgDisplayMode reported 0x32 and
+// MsgNativeDisplayMode reported 0x37, and both describe that state -- the
+// glasses hold two settings, which SpaceWalker names apart as
+// R6SetDisplayModeHIDMsg and R6NewerNativeDisplayModeHIDMsg.
+func TestBothDisplayModeMessagesAreNamed(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		frame []byte
+		id    byte
+		value uint16
+		dir   Direction
+		is3D  bool
+	}{
+		{
+			"the display mode, as a reply",
+			[]byte{0x10, 0x00, 0x24, 0x51, 0x03, 0x00, 0x32, 0x00, 0x00, 0x32},
+			MsgDisplayMode, Mode3840x1080At60, DirReply, true,
+		},
+		{
+			"the native mode, announced when the button was pressed",
+			[]byte{0x10, 0x01, 0x42, 0x71, 0x01, 0x00, 0x37, 0x00, 0x37},
+			MsgNativeDisplayMode, NativeMode3DSBS3840x1080At60, DirNotify, true,
+		},
+		{
+			"and back to 2D",
+			[]byte{0x10, 0x04, 0x42, 0x71, 0x01, 0x00, 0x31, 0x00, 0x31},
+			MsgNativeDisplayMode, Mode1920x1080At60, DirNotify, false,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, ok := ParseEvent(c.frame)
+			if !ok {
+				t.Fatal("a captured frame did not parse")
+			}
+			if e.ID != c.id {
+				t.Errorf("ID = %#02x, want %#02x", e.ID, c.id)
+			}
+			if e.Value != c.value {
+				t.Errorf("Value = %#x, want %#x", e.Value, c.value)
+			}
+			if e.Direction() != c.dir {
+				t.Errorf("Direction = %#x, want %#x", e.Direction(), c.dir)
+			}
+			if Stereoscopic(e.Value) != c.is3D {
+				t.Errorf("Stereoscopic(%#x) = %v", e.Value, Stereoscopic(e.Value))
+			}
+		})
+	}
+}
+
+// TestTheLengthByteIsConstantPerMessage.
+//
+// ⛔ It is NOT the payload's length: five announcements of the native mode
+// captured while the button was pressed, alternating 0x31 and 0x37, ALL carry
+// 0x01 -- while a display-mode reply carries 0x03 and a brightness reply 0x02,
+// in frames of the same shape. Whatever it means, it is a property of the
+// MESSAGE, which is what a caller building one needs to know.
+func TestTheLengthByteIsConstantPerMessage(t *testing.T) {
+	for _, f := range [][]byte{
+		{0x10, 0x00, 0x42, 0x71, 0x01, 0x00, 0x31, 0x00, 0x31},
+		{0x10, 0x01, 0x42, 0x71, 0x01, 0x00, 0x37, 0x00, 0x37},
+		{0x10, 0x04, 0x42, 0x71, 0x01, 0x00, 0x31, 0x00, 0x31},
+		{0x10, 0x05, 0x42, 0x71, 0x01, 0x00, 0x37, 0x00, 0x37},
+		{0x10, 0x07, 0x42, 0x71, 0x01, 0x00, 0x31, 0x00, 0x31},
+	} {
+		if f[4] != 0x01 {
+			t.Errorf("a native-mode frame carries length %#02x", f[4])
+		}
+		if _, ok := ParseEvent(f); !ok {
+			t.Errorf("%02x did not parse", f)
+		}
 	}
 }

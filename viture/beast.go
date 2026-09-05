@@ -93,23 +93,64 @@ const (
 	MsgNativeDOF byte = 0x44
 )
 
-// MsgDisplayMode is the message that carries the display mode.
+// The two messages that carry a display mode.
 //
-// Identified by CORRELATION rather than by guessing: while the glasses were
-// switched into 3D, this message reported 0x3A -- exactly
-// NativeMode3DSBS3840x1200At60 below -- and the display the Mac saw changed to
-// 3840x1200 in the same second. Switched back, the same message reported 0x31,
-// which is Mode1920x1080At60.
-const MsgDisplayMode byte = 0x42
+// ⭐ THERE ARE TWO, AND THEY ARE NOT A CONTRADICTION. The glasses hold two
+// settings that both describe what is in front of the eyes, and both were seen
+// at once on 2026-09-05 with the display at 3840x1080: MsgDisplayMode reported
+// 0x32 (Mode3840x1080At60) and MsgNativeDisplayMode reported 0x37
+// (NativeMode3DSBS3840x1080At60). SpaceWalker names them apart too --
+// R6SetDisplayModeHIDMsg and R6NewerNativeDisplayModeHIDMsg -- and the msgIDs
+// disassembled out of it, 0x0124 and 0x0142, have exactly these low bytes.
+//
+// Identified by CORRELATION rather than by guessing, twice over and months
+// apart. On 2026-09-02 MsgNativeDisplayMode reported 0x3A -- exactly
+// NativeMode3DSBS3840x1200At60 -- as the Mac's display list changed to
+// 3840x1200 in the same second, and 0x31 on the way back. On 2026-09-05 it
+// went 0x31 then 0x37 as the display became 3840x1080.
+const (
+	// MsgDisplayMode is the mode a host sets and reads: setDisplayMode 0x0124,
+	// getDisplayMode 0x3124.
+	MsgDisplayMode byte = 0x24
+	// MsgNativeDisplayMode is the headset's own native mode, 0x0142. It is the
+	// one that ANNOUNCES itself when the button is pressed.
+	MsgNativeDisplayMode byte = 0x42
+)
+
+// Direction is what a message is: the HIGH byte of its 16-bit msgID.
+//
+// ⭐ THE FRAME CARRIES A 16-BIT msgID SPLIT ACROSS TWO BYTES. Byte 2 of a
+// report is its LOW byte and byte 3 its HIGH byte, which is why what looked
+// like an opaque "kind" is a direction: the disassembled table in SpaceWalker
+// gives 0x0 for write, 0x3 for read and 0x7 for notify, a pattern that holds
+// over all forty of its entries, and the wire adds the fourth -- 0x5, a reply,
+// which the application only ever RECEIVES and therefore does not name.
+//
+// So getBrightness is 0x3122, setBrightness 0x0122, and a brightness reading
+// arrives as byte 2 = 0x22 with byte 3 = 0x51.
+type Direction byte
+
+const (
+	// DirWrite is a command from the host.
+	DirWrite Direction = 0x0
+	// DirRead is a question from the host.
+	DirRead Direction = 0x3
+	// DirReply is the glasses answering one.
+	DirReply Direction = 0x5
+	// DirNotify is the glasses saying something changed, unasked.
+	DirNotify Direction = 0x7
+)
 
 // Event is one frame from the glasses.
 type Event struct {
 	// Counter increments once per message. It is the only thing that says two
 	// identical readings are two events rather than one seen twice.
 	Counter byte
-	// ID says what the message is about; MsgDisplayMode is the one named here.
+	// ID says what the message is about. It is the LOW byte of the message's
+	// 16-bit identifier; see [Direction] for the high one.
 	ID byte
-	// Kind separates a reply from an announcement.
+	// Kind is the HIGH byte of the identifier, whose top nibble is the
+	// direction -- see [Event.Direction], which is the useful reading of it.
 	Kind byte
 	// Value is the message's value, which for MsgDisplayMode is a display mode.
 	Value uint16
@@ -224,3 +265,11 @@ func ModeName(mode uint16) string {
 	}
 	return "an unnamed mode"
 }
+
+// Direction says what this message is: a command, a question, an answer or an
+// announcement. See [Direction].
+func (e Event) Direction() Direction { return Direction(e.Kind >> 4) }
+
+// MsgID is the message's whole 16-bit identifier, as SpaceWalker's own table
+// writes it: 0x3124 for getDisplayMode, 0x0122 for setBrightness.
+func (e Event) MsgID() uint16 { return uint16(e.Kind)<<8 | uint16(e.ID) }
