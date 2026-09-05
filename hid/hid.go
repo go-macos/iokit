@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/go-macos/iokit/ioreturn"
 )
@@ -59,6 +60,10 @@ var (
 	// ErrNotOpen is returned when a report call is made on a device that has
 	// not been opened, or has already been closed.
 	ErrNotOpen = errors.New("hid: device not open")
+	// ErrStreaming says a device cannot be closed because a Stream is holding
+	// it. See [Device.Close]: closing under a stream does not fail, it ends the
+	// process.
+	ErrStreaming = errors.New("hid: device is being streamed")
 	// ErrEmptyReport is returned by [Device.SetReport] for a zero-length
 	// report, which IOKit would reject with an opaque code.
 	ErrEmptyReport = errors.New("hid: empty report")
@@ -240,6 +245,22 @@ type Device struct {
 	info Info
 	ref  uintptr
 	open bool
+	// streaming counts the live [Stream] calls holding this device.
+	//
+	// ⛔ BECAUSE CLOSING UNDER ONE ENDS THE PROCESS. IOKit keeps the device
+	// scheduled on a run loop with a registered callback for as long as a
+	// stream is pumping; releasing it from another goroutine leaves that
+	// schedule pointing at a freed object, and macOS kills the program with
+	// "BUG IN CLIENT OF LIBPLATFORM: os_unfair_lock is corrupt" -- SIGKILL,
+	// no Go panic, no stack, nothing on the program's own output. Measured
+	// 2026-09-05: a caller that cancelled the context and closed immediately
+	// died on the first attempt, twenty times out of twenty.
+	//
+	// ⚠ CANCELLING IS NOT STOPPING. The pump sits inside CFRunLoopRunInMode
+	// and only looks at the context when it comes out, so a caller that
+	// cancels and closes has not waited for anything. That is the mistake
+	// this counter turns into an error.
+	streaming atomic.Int32
 }
 
 // Info returns the device's enumeration-time description.
@@ -268,9 +289,26 @@ func (d *Device) Open() error {
 
 // Close closes the handle and releases the IOKit object. The Device must not be
 // used afterwards. Closing twice is a no-op.
+//
+// ⛔ IT REFUSES WHILE A [Stream] IS HOLDING THIS DEVICE, with [ErrStreaming].
+// Closing under a stream does not fail, it ENDS THE PROCESS: IOKit keeps the
+// device scheduled on a run loop with a registered callback, releasing it
+// leaves that schedule pointing at freed memory, and macOS kills the program
+// with "BUG IN CLIENT OF LIBPLATFORM: os_unfair_lock is corrupt" -- SIGKILL,
+// no Go panic, no stack, nothing on the program's own output. An error is a
+// thing a caller can handle; a dead process is not.
+//
+// ⚠ THE FIX IS TO WAIT, NOT TO RETRY. Cancelling a stream's context does not
+// stop it -- the pump is inside CFRunLoopRunInMode and looks at the context
+// when it comes out -- so the caller must join the goroutine running Stream
+// before closing: cancel, wait, close.
 func (d *Device) Close() error {
 	if d.ref == 0 {
 		return nil
+	}
+	if n := d.streaming.Load(); n > 0 {
+		return fmt.Errorf("%w: %s is in %d stream(s); cancel, wait for Stream to return, then close",
+			ErrStreaming, d.info, n)
 	}
 	var err error
 	if d.open {
@@ -351,6 +389,14 @@ func Stream(ctx context.Context, fn func(*Device, []byte), devs ...*Device) erro
 		}
 		refs[i] = d.ref
 		sizes[i] = bufSize(d.info.MaxInputReportSize)
+	}
+	// ⛔ CLAIMED FOR THE WHOLE CALL, so [Device.Close] refuses instead of
+	// killing the program. Marked AFTER the validation loop and released on
+	// every path out, including a panic: a device left marked would be a device
+	// nobody could ever close.
+	for _, d := range devs {
+		d.streaming.Add(1)
+		defer d.streaming.Add(-1)
 	}
 	return stream(ctx, refs, sizes, func(i int, data []byte) {
 		fn(devs[i], data)

@@ -405,3 +405,57 @@ func TestUnsupportedMeansSomethingElseOnTheManager(t *testing.T) {
 		}
 	}
 }
+
+// TestClosingUnderAStreamIsRefused.
+//
+// ⛔⛔ CLOSING UNDER A STREAM DOES NOT FAIL, IT ENDS THE PROCESS. IOKit keeps
+// the device scheduled on a run loop with a registered callback; releasing it
+// leaves that schedule pointing at freed memory, and macOS kills the program
+// with "BUG IN CLIENT OF LIBPLATFORM: os_unfair_lock is corrupt" -- SIGKILL,
+// no Go panic, no stack, nothing on the program's own output. Measured
+// 2026-09-05 on a VITURE headset: a caller that cancelled the context and
+// closed immediately died on the FIRST attempt, twenty times out of twenty.
+//
+// ⚠ CANCELLING IS NOT STOPPING, which is why the mistake is easy: the pump is
+// inside CFRunLoopRunInMode and only looks at the context when it comes out,
+// so a caller that cancels and closes has not waited for anything. An error is
+// a thing a caller can handle; a dead process is not.
+func TestClosingUnderAStreamIsRefused(t *testing.T) {
+	f := &fakes{}
+	withFakes(t, f)
+
+	d := &Device{ref: 1, open: true, info: Info{Product: "a headset"}}
+	var during error
+	f.streamRun = func(deliver func(int, []byte)) {
+		during = d.Close()
+	}
+	if err := Stream(context.Background(), func(*Device, []byte) {}, d); err != nil {
+		t.Fatalf("Stream() = %v", err)
+	}
+	if !errors.Is(during, ErrStreaming) {
+		t.Errorf("Close() during a stream = %v, want ErrStreaming", during)
+	}
+	// And it says what to DO, because "refused" alone sends somebody looking
+	// for a lock that is not there.
+	if during != nil && !strings.Contains(during.Error(), "cancel, wait") {
+		t.Errorf("the refusal reads %q and does not name the remedy", during)
+	}
+	// The refusal must not have half-closed it: a device released and then
+	// reported as still open is the same crash with an error in front of it.
+	if len(f.released) != 0 {
+		t.Errorf("the refused Close released %v anyway", f.released)
+	}
+	if !d.open {
+		t.Error("the refused Close marked the device shut")
+	}
+
+	// ⭐ AND THE DEVICE IS CLOSEABLE ONCE THE STREAM HAS RETURNED, which is the
+	// half that makes this a guard rather than a leak: a device left marked
+	// would be one nobody could ever close.
+	if err := d.Close(); err != nil {
+		t.Errorf("Close() after the stream = %v", err)
+	}
+	if len(f.released) != 1 {
+		t.Errorf("the device was released %d times", len(f.released))
+	}
+}
