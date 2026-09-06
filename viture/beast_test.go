@@ -389,3 +389,37 @@ func TestTheLengthByteIsConstantPerMessage(t *testing.T) {
 		}
 	}
 }
+
+// TestTheTwoModeReadsAreDifferentQuestions.
+//
+// ⚠ MEASURED 2026-09-06 on a Beast sitting at 1920x1080 at 60 Hz: a read of
+// MsgDisplayMode answered 0x36, which is in NEITHER table -- not the display
+// modes, not the native ones -- while at the same moment MsgNativeDisplayMode
+// answered 0x31, exactly NativeMode1920x1080At60 and exactly what the panel
+// was doing.
+//
+// So the two reads are not interchangeable, and a caller reaching for "the
+// current mode" must reach for the second. This pins that they at least ASK
+// different messages, which is the part a test can hold.
+func TestTheTwoModeReadsAreDifferentQuestions(t *testing.T) {
+	a, b := ReadDisplayMode(), ReadNativeDisplayMode()
+	if len(a) != ReportSize || len(b) != ReportSize {
+		t.Fatalf("reports are %d and %d bytes, want %d", len(a), len(b), ReportSize)
+	}
+	if a[2] != MsgDisplayMode {
+		t.Errorf("ReadDisplayMode asks %#02x", a[2])
+	}
+	if b[2] != MsgNativeDisplayMode {
+		t.Errorf("ReadNativeDisplayMode asks %#02x", b[2])
+	}
+	// Both are READS: they must not carry a value, or they are commands.
+	if a[3] != DirRead || b[3] != DirRead {
+		t.Errorf("one of them is not a read: %#02x %#02x", a[3], b[3])
+	}
+	for i := 6; i < 10; i++ {
+		if a[i] != 0 || b[i] != 0 {
+			t.Errorf("a read carries a value at byte %d: % x / % x", i, a[6:10], b[6:10])
+			break
+		}
+	}
+}
