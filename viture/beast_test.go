@@ -423,3 +423,45 @@ func TestTheTwoModeReadsAreDifferentQuestions(t *testing.T) {
 		}
 	}
 }
+
+// ⛔⛔ THE ANNOUNCEMENT NUMBERING AND THE COMMAND NUMBERING COLLIDE, and this is
+// the test that stops them being quietly merged again.
+//
+// 0x43 announces the electrochromic film and is written to set the tracking
+// mode. 0x44 announces the tracking mode and is written to set the side mode.
+// Both were measured -- the first from frames the headset sent, the second from
+// what the manufacturer's own libglasses.so assembles -- and reconciled by
+// reading 0x43 while the headset's own 3DOF button was pressed.
+//
+// Somebody tidying these into one list would produce a package that reframes a
+// person's display when asked to anchor it. That happened.
+func TestTheTwoNumberingsAreNotOneList(t *testing.T) {
+	if MsgElectrochromic != CmdNativeDOF {
+		t.Errorf("0x43 is announced as the film and written as the tracking mode; "+
+			"they are the same byte and this test exists to say so: %#x vs %#x",
+			MsgElectrochromic, CmdNativeDOF)
+	}
+	if MsgNativeDOF != CmdNativeSideMode {
+		t.Errorf("0x44 is announced as the tracking mode and written as the side "+
+			"mode: %#x vs %#x", MsgNativeDOF, CmdNativeSideMode)
+	}
+	if MsgVolume != CmdNativeRecenter {
+		t.Errorf("0x30 is announced as the volume and written to recentre: %#x vs %#x",
+			MsgVolume, CmdNativeRecenter)
+	}
+	// And the ones that do NOT collide, so that a future edit which shifts a
+	// command id is caught rather than absorbed.
+	for name, got := range map[string]byte{
+		"CmdNativeMode": CmdNativeMode, "CmdNativeDisplayMode": CmdNativeDisplayMode,
+		"CmdNativeDisplayDistance": CmdNativeDisplayDistance,
+		"CmdNativeDisplaySize":     CmdNativeDisplaySize,
+	} {
+		want := map[string]byte{
+			"CmdNativeMode": 0x40, "CmdNativeDisplayMode": 0x42,
+			"CmdNativeDisplayDistance": 0x27, "CmdNativeDisplaySize": 0x28,
+		}[name]
+		if got != want {
+			t.Errorf("%s = %#x, and libglasses.so writes %#x", name, got, want)
+		}
+	}
+}
