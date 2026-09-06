@@ -341,7 +341,26 @@ func SetDisplayMode(mode uint16) []byte {
 // on any device: it is safe to repeat, and its success is visible in a way a
 // command's is not. It was a read that proved these reports reach the glasses
 // at all, after nineteen writes had failed to say so either way.
+//
+// ⚠ BUT DO NOT TRUST WHAT IT ANSWERS. Measured 2026-09-06 on a Beast sitting at
+// 1920x1080 at 60 Hz: this read returned 0x36, which is in NEITHER table -- not
+// the display modes above, not the native ones. At the same moment
+// [ReadNativeDisplayMode] returned 0x31, which is exactly
+// NativeMode1920x1080At60 and exactly what the panel was doing.
+//
+// So MsgDisplayMode ACCEPTS the values above -- writing 0x31 and 0x34 moved the
+// panel between 60 Hz and 120 Hz, and 0x32 switched it to side-by-side -- while
+// what it REPORTS is in some other encoding nobody here has explained. A
+// caller that wants to know the current mode should ask 0x42.
 func ReadDisplayMode() []byte { return command(MsgDisplayMode, 0x03, 0) }
+
+// ReadNativeDisplayMode asks the same question of the message that answers it
+// in the documented vocabulary.
+//
+// ⭐ THIS IS THE ONE TO ASK. Its answers land on the NativeMode constants and
+// were confirmed against the panel: 0x31 while the glasses presented
+// 1920x1080 at 60 Hz, 0x37 while they presented 3840x1080 side by side.
+func ReadNativeDisplayMode() []byte { return command(MsgNativeDisplayMode, 0x03, 0) }
 
 // command builds a report of this generation.
 func command(msg, length byte, value uint16) []byte {
