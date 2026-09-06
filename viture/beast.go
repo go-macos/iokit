@@ -123,6 +123,59 @@ const (
 	MsgNativeDOF byte = 0x44
 )
 
+// ⛔⛔ WHAT THE HEADSET ANNOUNCES AND WHAT IT IS TOLD ARE NUMBERED DIFFERENTLY,
+// AND THE TWO COLLIDE ON THE SAME BYTES.
+//
+// The constants above were measured from FRAMES THE HEADSET SENT, one SDK
+// function exercised at a time. The ones below are what the manufacturer's own
+// library WRITES, read out of wheaney/XRLinuxDriver's libglasses.so. On the
+// native family they disagree, and both are right:
+//
+//	byte   announced as           written as
+//	0x43   electrochromic film    native DOF
+//	0x44   native DOF             native side mode
+//	0x30   volume                 recentre the anchored picture
+//
+// ⛔ CONFLATING THEM COSTS AN AFTERNOON AND SOMEBODY'S DISPLAY. Writing 1 to
+// 0x44 in the belief that it was the tracking mode made the desk small and put
+// it bottom-left -- a layout setting doing exactly what a layout setting does --
+// and nothing anchored, because the tracking register had not been touched.
+//
+// The two readings were reconciled by a third measurement that belongs to
+// neither: READING 0x43 while somebody worked the headset's own 3DOF button. It
+// went 0 → 1 → 0 → 1 in step with the button while 0x40, 0x42 and 0x44 stood
+// still. A read is in the command numbering, so 0x43 is the tracking mode
+// there; the captured frames in the tests are in the announcement numbering, so
+// 0x43 is the film there. Neither observation was careless and neither is
+// wrong.
+const (
+	// CmdNativeMode is bypass (0) or native (1): whether the glasses show the
+	// host's video as it comes, or composite it themselves.
+	//
+	// ⛔ NATIVE TRACKING NEEDS THIS FIRST. The public header says native DOF is
+	// refused outright while the device is in bypass mode, and that after
+	// setting this one a display mode has to be set "to complete the switch".
+	CmdNativeMode byte = 0x40
+	// CmdNativeDisplayMode is which native mode the composited picture is in.
+	CmdNativeDisplayMode byte = 0x42
+	// CmdNativeDOF is the native tracking mode: 0 none, 1 3DOF, 2 smooth follow.
+	//
+	// ⭐ Confirmed by the headset's own button, which is the one witness that
+	// belongs to neither numbering: reading this while it was pressed gave
+	// 0 → 1 → 0 → 1.
+	CmdNativeDOF byte = 0x43
+	// CmdNativeSideMode is the native side mode. Writing it reframes the
+	// picture; it has nothing to do with tracking.
+	CmdNativeSideMode byte = 0x44
+	// CmdNativeRecenter puts the anchored picture back in front of the viewer.
+	// The vendor library writes it with a payload of zero.
+	CmdNativeRecenter byte = 0x30
+	// CmdNativeDisplayDistance is how far the anchored picture sits, 1 to 10.
+	CmdNativeDisplayDistance byte = 0x27
+	// CmdNativeDisplaySize is how large it is, 0 to 4.
+	CmdNativeDisplaySize byte = 0x28
+)
+
 // The two messages that carry a display mode.
 //
 // ⭐ THERE ARE TWO, AND THEY ARE NOT A CONTRADICTION. The glasses hold two
