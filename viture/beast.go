@@ -223,8 +223,25 @@ type Event struct {
 	// the same direction, which that rule cannot explain. See
 	// TestTheThreeAnnouncementKindsDoNotSplitByMessage.
 	Kind byte
-	// Value is the message's value, which for MsgDisplayMode is a display mode.
+	// Value is the message value, which for MsgDisplayMode is a display mode.
 	Value uint16
+	// Text is what follows the header, for the messages that answer with TEXT
+	// rather than a number.
+	//
+	// ⭐ MEASURED ON A BEAST, 2026-09-07. Asking 0x3002 and 0x3003 answers a
+	// board serial and a firmware version as ASCII:
+	//
+	//	10 00 03 50 15 00 0e 04 00 "20.0.01.027_20260825"
+	//	10 00 02 50 0e 00 21 03 00 "R6PMCC613005G"
+	//
+	// The 16-bit field at 6..7 is a CHECKSUM on these, not a value, so Value is
+	// meaningless for them and Payload is the whole answer. It is nil when the
+	// frame carries none.
+	//
+	// ⭐ A STRING, AND DELIBERATELY. Bytes would make an Event uncomparable,
+	// and callers compare Events with == today. A string also copies, so it
+	// survives the report buffer the callback hands over and is reused.
+	Text string
 }
 
 // ParseEvent reads a frame of this generation, and reports whether it is one.
@@ -241,6 +258,7 @@ func ParseEvent(b []byte) (Event, bool) {
 		ID:      b[2],
 		Kind:    b[3],
 		Value:   binary.LittleEndian.Uint16(b[6:8]),
+		Text:    textOf(b),
 	}, true
 }
 
@@ -433,3 +451,36 @@ func command(msg, length byte, value uint16) []byte {
 // ReportSize is how many bytes a report to this device carries, from its own
 // descriptor.
 const ReportSize = 64
+
+// textOf is the text an answer carries after its header, or "".
+//
+// ⛔ THE LENGTH FIELD IS NOT TRUSTED FURTHER THAN THE BUFFER. It is the
+// device's own number and it counts the status byte with the text, so a frame
+// claiming more than it holds is clamped rather than read past. A report that
+// is all padding after the header carries nothing, and says so.
+func textOf(b []byte) string {
+	const header = 9 // 0..7 as above, then one status byte
+	if len(b) < header {
+		return ""
+	}
+	// Length covers the status byte and the text; the text is one shorter.
+	n := int(binary.LittleEndian.Uint16(b[4:6]))
+	if n < 1 {
+		return ""
+	}
+	end := header + n - 1
+	if end > len(b) {
+		end = len(b)
+	}
+	if end <= header {
+		return ""
+	}
+	// ⛔ TRAILING NULs AND 0xFF PADDING ARE NOT TEXT. A serial the headset does
+	// not have comes back as 0xff repeated, which is the vendor own test for
+	// absent, and the fixed-width fields are NUL-padded.
+	out := b[header:end]
+	for len(out) > 0 && (out[len(out)-1] == 0x00 || out[len(out)-1] == 0xff) {
+		out = out[:len(out)-1]
+	}
+	return string(out)
+}
