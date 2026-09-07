@@ -65,55 +65,87 @@ const (
 	KindReplyB byte = 0x51
 	KindReplyC byte = 0x52
 	KindReplyD byte = 0x54
-	// KindNotify3 carried MsgBrightness, where volume and wear status came on
-	// KindNotify2 and the ambient, mode and film messages on KindNotify. The
-	// three announcement kinds therefore do NOT split by message id alone.
+	// KindNotify3 carries [MsgVolume], where the film and the wear status come
+	// on KindNotify2 and the brightness and the mode on KindNotify. The three
+	// announcement kinds therefore do NOT split by message id alone.
+	//
+	// ⛔ THE GROUPING HELD; THE NAMES IN IT DID NOT. What this comment used to
+	// call the brightness is the volume, measured 2026-09-07. See [MsgVolume].
 	KindNotify3 byte = 0x72
 	KindAck     byte = 0x21
 )
 
-// The messages, each identified by provoking ONE function at a time and
-// reading the clock.
+// The messages, each identified by DRIVING IT TO BOTH ITS STOPS and reading
+// the number it stopped at.
 //
-// The manufacturer's SDK exposes exactly six things -- brightness, volume,
-// display mode, electrochromic film, native 3DOF and wear status -- and
-// wheaney/XRLinuxDriver publishes that list. On 2026-09-02 each was exercised
-// in turn, five seconds apart, while this package listened. Every one of the
-// six announced itself, and the spacing is what makes the mapping an
-// observation rather than a guess.
+// ⛔⛔ THREE OF THESE CARRIED THE WRONG NAME UNTIL 2026-09-07, AND THE METHOD
+// IS WHY. The mapping used to be made by working each control in turn five
+// seconds apart and attributing the announcements BY THEIR ORDER. But this
+// headset has ONE pair of buttons for the volume and the brightness, with a
+// third button switching which of the two they drive -- so an order assumed is
+// not an order observed, and the whole mapping had slid by one.
 //
-// Two of them corroborate independently of the order they were done in:
-// MsgDisplayMode was already known from the Mac's own display list changing
-// with it, and MsgWearStatus read 1 from the first second -- the glasses were
-// being worn -- and then 0, 1, 0 as they were taken off and put back on.
+// ⭐ WHAT REPLACED IT COSTS NOTHING AND CANNOT SLIDE: the CEILING. The
+// manufacturer documents a volume of [0, 15], a brightness of [0, 8] and a
+// film of [0, 8] for this model, and the three ranges are enough to tell the
+// first from the other two outright. Drive a control to its stop, read the
+// number, and no assumption about the order of anything is needed. Every
+// constant below was redone that way, glasses worn, with the wearer naming
+// which button they were pressing.
 const (
-	// MsgBrightness carries the brightness step. Seen 1, 2, 1, 0 while it was
-	// raised twice and lowered twice.
-	MsgBrightness byte = 0x01
+	// MsgVolume carries the volume step, 0 to 15.
+	//
+	// ⛔ IT WAS CALLED MsgBrightness. Driven to its stop it announces 15, and
+	// only the volume goes past 8 on this model. The disassembly agrees:
+	// SpaceWalker names volumeUpdate = 0x7201, which is this id on
+	// [KindNotify3], the kind it was seen on.
+	MsgVolume byte = 0x01
 	// MsgWearStatus is 1 while the glasses are on a face and 0 when they are
 	// not. It is the one message that moves without anybody pressing anything.
+	//
+	// ⭐ CONFIRMED AGAIN 2026-09-07: it announced 1 as the glasses went on and
+	// 0 as they came off, unprompted, in the middle of an unrelated capture.
 	MsgWearStatus byte = 0x21
-	// MsgDisplayBrightness is the SETTABLE brightness of the display, 0 to 8.
+	// MsgBrightness is the brightness of the display, 0 to 8, and it is
+	// SETTABLE: set to 3 and read back 3, set to 7 and read back 7, and the
+	// display changed. A sweep found the edges with no watching at all:
+	// accepted from 0 to 8, REFUSED from 9 up. The disassembly agrees twice --
+	// SpaceWalker names setBrightness = 0x0122 and brightnessUpdate = 0x7122.
 	//
-	// ⛔ IT WAS CALLED MsgDisplayBrightness AND THAT WAS WRONG. The old comment read
-	// "moves on its own... which is what an ambient light reading would do.
-	// Named for what it appears to track, and this comment is the whole of the
-	// evidence" -- an honest hedge, and refuted on 2026-09-05 by writing it:
-	// set to 3 and read back 3, set to 7 and read back 7, and the display
-	// changed. A sweep found the edges the same way, with no watching at all:
-	// accepted from 0 to 8, REFUSED from 9 up. The disassembly agrees --
-	// SpaceWalker names setBrightness = 0x0122.
+	// ⭐ THE DOUBT THAT USED TO SIT HERE IS SETTLED. It read "whether it is the
+	// same quantity as MsgBrightness is not established ... they may be one
+	// setting seen from two sides, and nothing here has shown that" -- an
+	// honest hedge, and the right one to have kept. They are NOT one setting:
+	// 0x01 is the volume and stops at 15, this is the brightness and stops at
+	// 8, and each was driven to both its stops while the other did not move.
+	MsgBrightness byte = 0x22
+	// MsgElectrochromic carries the opacity of the film, 0 to 8 -- the nine
+	// tint levels this model is sold with.
 	//
-	// ⚠ WHETHER IT IS THE SAME QUANTITY AS [MsgBrightness] IS NOT ESTABLISHED.
-	// 0x01 is what the headset ANNOUNCES when the button on the arm is pressed;
-	// this is what it accepts being told. They may be one setting seen from two
-	// sides, and nothing here has shown that.
-	MsgDisplayBrightness byte = 0x22
-	// MsgVolume carries the volume step, 0 to 8. Seen ramping all the way up
-	// and all the way back down.
-	MsgVolume byte = 0x30
-	// MsgElectrochromic carries the opacity of the film: 0, 1 and 2 were seen.
-	MsgElectrochromic byte = 0x43
+	// ⛔⛔ IT WAS 0x43, WHICH IS NOT AN ANNOUNCEMENT AT ALL. 0x43 WRITTEN is
+	// [CmdNativeDOF], so writing "film" values into it anchors the picture in
+	// the room instead of tinting anything -- met on a real desk, where the
+	// wearer lost their screen off to one side and had to turn their head to
+	// find it. The three values "0, 1 and 2" the old comment reported as tint
+	// levels are the three tracking modes.
+	//
+	// ⚠ AND 0x30 IS [CmdNativeRecenter] WHEN WRITTEN. Conclude nothing from
+	// that: the two directions are separate namespaces on this hardware.
+	//
+	// The wearer named the button, drove it to both stops -- 8 and 0 -- and
+	// confirmed the lenses changed tint while it moved. That last witness is
+	// the only one in this file that no software interprets.
+	MsgElectrochromic byte = 0x30
+	// MsgNativeTracking is 0x43 announcing, which USED to be called the film.
+	//
+	// ⚠ NAMED FOR WHERE IT SITS, NOT FOR WHAT IT CARRIES. It has been seen
+	// announcing 0 and 2, and 0x43 WRITTEN is [CmdNativeDOF], whose three modes
+	// are 0, 1 and 2 -- so the tracking mode is the obvious reading. It is not
+	// the established one: on 2026-09-07 the film was driven across its whole
+	// range, in both directions, and THIS ID NEVER ANNOUNCED. That rules out
+	// the film and nothing more. Whoever needs it should drive the tracking
+	// modes and watch, the way the four above were settled.
+	MsgNativeTracking byte = 0x43
 	// MsgNativeDOF is 1 when the glasses anchor their picture in space and 0
 	// when it follows the head.
 	//

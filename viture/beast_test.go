@@ -33,17 +33,25 @@ func TestParseEventReadsTheFrameSeenOnTheWire(t *testing.T) {
 			Event{Counter: 0x00, ID: MsgWearStatus, Kind: KindNotify2, Value: 1},
 		},
 		{
-			// Volume ramps in nine steps; brightness in three. Keeping one of
-			// each means the identifiers cannot be swapped without a test
-			// saying so.
-			"the volume, most of the way up",
+			// ⛔⛔ THIS PAIR USED TO SAY "volume" AND "brightness", AND BOTH WERE
+			// WRONG. The comment here read: "Volume ramps in nine steps;
+			// brightness in three. Keeping one of each means the identifiers
+			// cannot be swapped without a test saying so." The guard was the
+			// right idea and it did not fire, because the two were not swapped
+			// with each other -- they were BOTH misnamed, so the wrong pair was
+			// pinned to the wrong names and the test agreed with itself. A
+			// guard against a swap is no guard against a common error.
+			//
+			// What settles them is the CEILING, and TestEachAnnouncementStops-
+			// WhereItsRangeEnds below now pins that instead of the names.
+			"the film, most of the way up",
 			[]byte{0x10, 0x0a, 0x30, 0x73, 0x01, 0x00, 0x08, 0x00},
-			Event{Counter: 0x0a, ID: MsgVolume, Kind: KindNotify2, Value: 8},
+			Event{Counter: 0x0a, ID: MsgElectrochromic, Kind: KindNotify2, Value: 8},
 		},
 		{
-			"the brightness, one step up",
+			"the volume, one step up",
 			[]byte{0x10, 0x03, 0x01, 0x72, 0x01, 0x00, 0x02, 0x00},
-			Event{Counter: 0x03, ID: MsgBrightness, Kind: 0x72, Value: 2},
+			Event{Counter: 0x03, ID: MsgVolume, Kind: 0x72, Value: 2},
 		},
 		{
 			// It went to zero unasked, in the same second the display entered
@@ -53,9 +61,12 @@ func TestParseEventReadsTheFrameSeenOnTheWire(t *testing.T) {
 			Event{Counter: 0x00, ID: MsgNativeDOF, Kind: KindNotify, Value: 0},
 		},
 		{
-			"the electrochromic film",
+			// Not the film: the film announces on 0x30, driven across its whole
+			// range in both directions on 2026-09-07 while THIS id stayed
+			// silent. What it is instead has not been established.
+			"0x43 announcing, which is not the film",
 			[]byte{0x10, 0x00, 0x43, 0x71, 0x01, 0x00, 0x02, 0x00},
-			Event{Counter: 0x00, ID: MsgElectrochromic, Kind: KindNotify, Value: 2},
+			Event{Counter: 0x00, ID: MsgNativeTracking, Kind: KindNotify, Value: 2},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -237,13 +248,18 @@ var capturedBeastFrames = []struct {
 	kind  byte
 	value uint16
 }{
-	{"brightness stepping up", "1029017201000700070000000000000000000000", MsgBrightness, KindNotify3, 7},
-	{"volume stepping up", "1032307301000800080000000000000000000000", MsgVolume, KindNotify2, 8},
+	{"volume stepping up", "1029017201000700070000000000000000000000", MsgVolume, KindNotify3, 7},
+	{"the film stepping up", "1032307301000800080000000000000000000000", MsgElectrochromic, KindNotify2, 8},
 	{"glasses put on", "1003217301000100010000000000000000000000", MsgWearStatus, KindNotify2, 1},
 	{"glasses taken off", "1038217301000000000000000000000000000000", MsgWearStatus, KindNotify2, 0},
-	{"the settable display brightness", "1037227101000600060000000000000000000000", MsgDisplayBrightness, KindNotify, 6},
-	{"the film going clear", "1034437101000000000000000000000000000000", MsgElectrochromic, KindNotify, 0},
-	{"the film going dark", "1033437101000200020000000000000000000000", MsgElectrochromic, KindNotify, 2},
+	{"the brightness", "1037227101000600060000000000000000000000", MsgBrightness, KindNotify, 6},
+	// ⛔ THE FIRST THREE NAMES ABOVE, AND THESE TWO, WERE WRONG UNTIL
+	// 2026-09-07 -- not the BYTES, which are evidence and untouched, only what
+	// this file said they meant. These two were "the film going clear" and "the
+	// film going dark"; the film is 0x30, and 0x43 stayed silent throughout a
+	// full sweep of the film in both directions.
+	{"0x43 announcing 0", "1034437101000000000000000000000000000000", MsgNativeTracking, KindNotify, 0},
+	{"0x43 announcing 2", "1033437101000200020000000000000000000000", MsgNativeTracking, KindNotify, 2},
 	{"a display mode", "1002427101003d003d00000000000000000000000000", MsgNativeDisplayMode, KindNotify, 0x3d},
 }
 
@@ -429,27 +445,28 @@ func TestTheTwoModeReadsAreDifferentQuestions(t *testing.T) {
 // ⛔⛔ THE ANNOUNCEMENT NUMBERING AND THE COMMAND NUMBERING COLLIDE, and this is
 // the test that stops them being quietly merged again.
 //
-// 0x43 announces the electrochromic film and is written to set the tracking
+// 0x43 announces something not yet named and is written to set the tracking
 // mode. 0x44 announces the tracking mode and is written to set the side mode.
-// Both were measured -- the first from frames the headset sent, the second from
-// what the manufacturer's own libglasses.so assembles -- and reconciled by
-// reading 0x43 while the headset's own 3DOF button was pressed.
+// 0x30 announces the electrochromic film and is written to recentre.
 //
 // Somebody tidying these into one list would produce a package that reframes a
-// person's display when asked to anchor it. That happened.
+// person's display when asked to anchor it. That happened -- and then it
+// happened AGAIN on 2026-09-07, from the other direction: values meant for the
+// film were written to 0x43, which anchored a worn headset's picture off to one
+// side while its wearer hunted for it.
 func TestTheTwoNumberingsAreNotOneList(t *testing.T) {
-	if MsgElectrochromic != CmdNativeDOF {
-		t.Errorf("0x43 is announced as the film and written as the tracking mode; "+
-			"they are the same byte and this test exists to say so: %#x vs %#x",
-			MsgElectrochromic, CmdNativeDOF)
+	if MsgNativeTracking != CmdNativeDOF {
+		t.Errorf("0x43 announces on one numbering and sets the tracking mode on the "+
+			"other; they are the same byte and this test exists to say so: %#x vs %#x",
+			MsgNativeTracking, CmdNativeDOF)
 	}
 	if MsgNativeDOF != CmdNativeSideMode {
 		t.Errorf("0x44 is announced as the tracking mode and written as the side "+
 			"mode: %#x vs %#x", MsgNativeDOF, CmdNativeSideMode)
 	}
-	if MsgVolume != CmdNativeRecenter {
-		t.Errorf("0x30 is announced as the volume and written to recentre: %#x vs %#x",
-			MsgVolume, CmdNativeRecenter)
+	if MsgElectrochromic != CmdNativeRecenter {
+		t.Errorf("0x30 is announced as the film and written to recentre: %#x vs %#x",
+			MsgElectrochromic, CmdNativeRecenter)
 	}
 	// And the ones that do NOT collide, so that a future edit which shifts a
 	// command id is caught rather than absorbed.
@@ -531,5 +548,69 @@ func TestTextIsBoundedByTheReportAndNotByTheDevice(t *testing.T) {
 	copy(over[9:], []byte("ok"))
 	if e, _ := ParseEvent(over); e.Text != "ok" {
 		t.Errorf("an overrunning length gave %q, want the bytes actually there", e.Text)
+	}
+}
+
+// The ceilings, captured on 2026-09-07 from a worn Beast while its wearer named
+// which button they were pressing and drove each control to its stop. The bytes
+// are the significant prefix the listener printed; the report is 64 bytes with
+// the rest zero, and the fixtures above keep one at full length to show that.
+var beastCeilingFrames = []struct {
+	what  string
+	frame []byte
+	id    byte
+	kind  byte
+	// max is what the manufacturer documents for this model, and it is the
+	// whole point: the three ranges are not the same, so a control driven to
+	// its stop names itself without anybody having to remember what was
+	// pressed first.
+	max uint16
+}{
+	{"volume", []byte{0x10, 0xa2, 0x01, 0x72, 0x01, 0x00, 0x0f, 0x00, 0x0f}, MsgVolume, KindNotify3, 15},
+	{"brightness", []byte{0x10, 0xa8, 0x22, 0x71, 0x01, 0x00, 0x08, 0x00, 0x08}, MsgBrightness, KindNotify, 8},
+	{"electrochromic film", []byte{0x10, 0x72, 0x30, 0x73, 0x01, 0x00, 0x08, 0x00, 0x08}, MsgElectrochromic, KindNotify2, 8},
+}
+
+// TestEachAnnouncementStopsWhereItsRangeEnds pins the CEILING of each
+// announcement, because the ceiling is what told these apart after their names
+// had been wrong for five days.
+//
+// ⛔⛔ THE NAMES WERE NOT EVIDENCE, AND NOTHING IN THIS FILE HAD NOTICED. The
+// mapping was first made by working each control in turn five seconds apart and
+// attributing the announcements BY THEIR ORDER -- on a headset whose volume and
+// brightness share ONE pair of buttons, with a third button switching which.
+// Three of the four names were wrong, and the test that was supposed to catch a
+// swap did not, because they were not swapped with each other: they were all
+// misnamed together, so the wrong frames were pinned to the wrong names and
+// everything agreed with itself.
+//
+// ⭐ A RANGE CANNOT SLIDE. The manufacturer documents a volume of [0, 15] for
+// this model against a brightness and a film of [0, 8]. The volume frame below
+// carries 15, which the old naming called the brightness -- so this test, had
+// it existed, would have failed on the day the mistake was made.
+func TestEachAnnouncementStopsWhereItsRangeEnds(t *testing.T) {
+	for _, c := range beastCeilingFrames {
+		t.Run(c.what, func(t *testing.T) {
+			got, ok := ParseEvent(c.frame)
+			if !ok {
+				t.Fatal("a frame from the wire was not recognised")
+			}
+			if got.ID != c.id || got.Kind != c.kind {
+				t.Fatalf("got id %#02x kind %#02x, want %#02x and %#02x",
+					got.ID, got.Kind, c.id, c.kind)
+			}
+			if got.Value != c.max {
+				t.Errorf("the %s stopped at %d, and its documented range ends at %d: "+
+					"either the capture is not of the %s or the range is not this one",
+					c.what, got.Value, c.max, c.what)
+			}
+		})
+	}
+	// ⛔ AND THE RANGES MUST STAY TELLING. If a future edit gave two of these
+	// the same ceiling, the measurement that settled them would stop settling
+	// anything and nothing here would say so.
+	if beastCeilingFrames[0].max == beastCeilingFrames[1].max {
+		t.Error("the volume and the brightness now claim the same ceiling, which is " +
+			"what made them distinguishable at all")
 	}
 }
