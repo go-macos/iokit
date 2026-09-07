@@ -2,6 +2,8 @@ package viture
 
 import (
 	"encoding/hex"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -463,5 +465,71 @@ func TestTheTwoNumberingsAreNotOneList(t *testing.T) {
 		if got != want {
 			t.Errorf("%s = %#x, and libglasses.so writes %#x", name, got, want)
 		}
+	}
+}
+
+// TestAnAnswerCanCarryTextAndNotANumber.
+//
+// ⭐ MEASURED ON A BEAST, 2026-09-07, by asking the vendor's own read ids.
+// These are the bytes that came back, not bytes anybody composed:
+//
+//	0x3003 firmware -> "20.0.01.027_20260825"
+//	0x3002 board SN -> "R6PMCC613005G"
+//	0x3005 package SN -> 0xff repeated, which is how this headset says it has none
+//
+// The 16-bit field at 6..7 is a CHECKSUM on these, so Event.Value is
+// meaningless for them and the text is the whole answer.
+func TestAnAnswerCanCarryTextAndNotANumber(t *testing.T) {
+	frame := func(hexHeader string, text []byte) []byte {
+		b := make([]byte, ReportSize)
+		var head []byte
+		for i := 0; i+1 < len(hexHeader); i += 2 {
+			var v byte
+			fmt.Sscanf(hexHeader[i:i+2], "%02x", &v)
+			head = append(head, v)
+		}
+		copy(b, head)
+		copy(b[len(head):], text)
+		return b
+	}
+
+	for _, c := range []struct {
+		what, header string
+		text         []byte
+		want         string
+	}{
+		{"firmware", "100003501500 0e0400", []byte("20.0.01.027_20260825"), "20.0.01.027_20260825"},
+		{"board serial", "100002500e00 210300", []byte("R6PMCC613005G"), "R6PMCC613005G"},
+		// ⛔ 0xff REPEATED IS NOT A SERIAL. It is how the headset says it has
+		// none, and the vendor's own tool tests exactly that byte.
+		{"absent serial", "100005502100 e01f00", []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, ""},
+	} {
+		e, ok := ParseEvent(frame(strings.ReplaceAll(c.header, " ", ""), c.text))
+		if !ok {
+			t.Fatalf("%s: the frame did not parse", c.what)
+		}
+		if e.Text != c.want {
+			t.Errorf("%s: Text = %q, want %q", c.what, e.Text, c.want)
+		}
+	}
+}
+
+// A frame with nothing after its header carries no text, and a length that
+// overruns the report is clamped rather than believed.
+func TestTextIsBoundedByTheReportAndNotByTheDevice(t *testing.T) {
+	b := make([]byte, ReportSize)
+	copy(b, []byte{EventHeader, 0x00, 0x03, 0x50, 0x01, 0x00, 0, 0, 0})
+	if e, _ := ParseEvent(b); e.Text != "" {
+		t.Errorf("a header-only frame gave %q", e.Text)
+	}
+
+	// ⛔ THE DEVICE OWN LENGTH IS NOT A PROMISE. 0xff is the largest a frame can
+	// even express -- the header check refuses a non-zero high byte -- and 9 +
+	// 255 already runs off the end of a 64-byte report.
+	over := make([]byte, ReportSize)
+	copy(over, []byte{EventHeader, 0x00, 0x03, 0x50, 0xff, 0x00, 0, 0, 0})
+	copy(over[9:], []byte("ok"))
+	if e, _ := ParseEvent(over); e.Text != "ok" {
+		t.Errorf("an overrunning length gave %q, want the bytes actually there", e.Text)
 	}
 }
