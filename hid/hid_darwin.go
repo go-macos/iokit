@@ -63,6 +63,9 @@ var (
 
 	kCFRunLoopDefaultMode uintptr
 
+	// hidPumpMode is a run-loop mode of this package's own. See [darwinStream].
+	hidPumpMode uintptr
+
 	// The two callback tables a CFDictionary needs to compare its keys by
 	// VALUE. Unlike a run-loop mode name these are structs, not strings, so
 	// there is nothing to rebuild: the real exported symbols are the only way.
@@ -134,6 +137,20 @@ func doLoad() error {
 	// dereferencing the global -- and it avoids the uintptr->unsafe.Pointer
 	// conversion that go vet's unsafeptr check rightly flags.
 	kCFRunLoopDefaultMode = cfstr("kCFRunLoopDefaultMode")
+
+	// ⛔⛔ AND THE PUMP RUNS A MODE OF THIS PACKAGE'S OWN. The default mode is
+	// SHARED. darwinStream pins its goroutine to an OS thread, which is right,
+	// but that thread is a RECYCLED Go thread -- so whatever another library
+	// attached to it earlier is serviced by this pump as well. Measured, in
+	// go-xrkit/desk's suite: the pump at the bottom of darwinStream faulted
+	// while invoking a purego BLOCK belonging to go-macos/objc.DispatchMain --
+	// nothing to do with HID. A mode nobody else names can only carry what this
+	// package scheduled in it.
+	//
+	// The name is a string like any other: CFRunLoop compares mode names by
+	// value, and a mode comes into existence as soon as something is scheduled
+	// in it.
+	hidPumpMode = cfstr("com.go-macos.iokit.hid.stream")
 
 	// These two are looked up rather than rebuilt. A missing one is not fatal:
 	// without them a matching dictionary cannot be built and enumeration falls
@@ -409,7 +426,7 @@ func darwinStream(ctx context.Context, refs []uintptr, sizes []int, deliver func
 		// not be used for.
 		bufs[i] = cMalloc(uint64(sizes[i]))
 		ioHIDDeviceRegisterInputCB(ref, bufs[i], int64(sizes[i]), callbackPtr, nil)
-		ioHIDDeviceScheduleWithRL(ref, rl, kCFRunLoopDefaultMode)
+		ioHIDDeviceScheduleWithRL(ref, rl, hidPumpMode)
 	}
 
 	defer func() {
@@ -417,7 +434,7 @@ func darwinStream(ctx context.Context, refs []uintptr, sizes []int, deliver func
 			// Detach before freeing, so an in-flight report cannot be written
 			// into memory already handed back to the allocator.
 			ioHIDDeviceRegisterInputCB(ref, bufs[i], int64(sizes[i]), 0, nil)
-			ioHIDDeviceUnscheduleFromRL(ref, rl, kCFRunLoopDefaultMode)
+			ioHIDDeviceUnscheduleFromRL(ref, rl, hidPumpMode)
 			cFree(bufs[i])
 		}
 		registryMu.Lock()
@@ -431,6 +448,6 @@ func darwinStream(ctx context.Context, refs []uintptr, sizes []int, deliver func
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		cfRunLoopRunInMode(kCFRunLoopDefaultMode, pumpInterval.Seconds(), false)
+		cfRunLoopRunInMode(hidPumpMode, pumpInterval.Seconds(), false)
 	}
 }
