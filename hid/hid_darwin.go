@@ -4,6 +4,7 @@ package hid
 
 import (
 	"context"
+	"math"
 	"runtime"
 	"sync"
 	"time"
@@ -25,6 +26,10 @@ const (
 const (
 	kCFStringEncodingUTF8 = 0x08000100
 	kCFNumberSInt32Type   = 3
+	// kCFNumberSInt64Type is the widest integer CFNumberGetValue will fill, so
+	// asking for it is never a lossy conversion and never reports a present
+	// value as absent. See propInt.
+	kCFNumberSInt64Type = 4
 )
 
 // pumpInterval is how long each CFRunLoopRunInMode call blocks. It bounds how
@@ -38,6 +43,8 @@ var (
 	cfStringCreateWithCString func(alloc uintptr, s string, enc uint32) uintptr
 	cfStringGetCString        func(str uintptr, buf unsafe.Pointer, size int64, enc uint32) bool
 	cfNumberGetValue          func(num uintptr, theType int32, valuePtr unsafe.Pointer) bool
+	cfGetTypeID               func(cf uintptr) uint64
+	cfNumberGetTypeID         func() uint64
 	cfNumberCreate            func(alloc uintptr, theType int32, valuePtr unsafe.Pointer) uintptr
 	cfDictionaryCreateMutable func(alloc uintptr, capacity int64, keyCB, valCB uintptr) uintptr
 	cfDictionarySetValue      func(dict, key, value uintptr)
@@ -108,6 +115,8 @@ func doLoad() error {
 	purego.RegisterLibFunc(&cfStringCreateWithCString, cf, "CFStringCreateWithCString")
 	purego.RegisterLibFunc(&cfStringGetCString, cf, "CFStringGetCString")
 	purego.RegisterLibFunc(&cfNumberGetValue, cf, "CFNumberGetValue")
+	purego.RegisterLibFunc(&cfGetTypeID, cf, "CFGetTypeID")
+	purego.RegisterLibFunc(&cfNumberGetTypeID, cf, "CFNumberGetTypeID")
 	purego.RegisterLibFunc(&cfNumberCreate, cf, "CFNumberCreate")
 	purego.RegisterLibFunc(&cfDictionaryCreateMutable, cf, "CFDictionaryCreateMutable")
 	purego.RegisterLibFunc(&cfDictionarySetValue, cf, "CFDictionarySetValue")
@@ -175,7 +184,25 @@ func cfstr(s string) uintptr {
 	return cfStringCreateWithCString(0, s, kCFStringEncodingUTF8)
 }
 
-// propInt reads an integer registry property, reporting whether it was present.
+// propInt reads an integer registry property, reporting whether it was present
+// AND was actually a number.
+//
+// ⛔⛔ THE TYPE CHECK IS NOT DEFENSIVE NOISE. CFNumberGetValue on a CFString is
+// undefined behaviour, and the registry is free to publish a property under a
+// type this code did not expect. go-macos/iokit/usb says the same thing above
+// its own propInt, in those words; this package was the sibling that had not
+// learnt it.
+//
+// ⛔⛔ AND THE WIDEST TYPE, NOT THE ONE THE CALLER WANTS. CFNumberGetValue
+// returns FALSE for a LOSSY conversion, so asking for SInt32 from a CFNumber
+// that holds a 64-bit value reports the property ABSENT -- a present value read
+// as missing, silently, which is the worse of the two failures because nothing
+// looks wrong. go-macos/diskarbitration was bitten by exactly this and wrote it
+// down: DAAppearanceTime "read back as 0 on this machine until the type was
+// consulted first".
+//
+// So the value is read at 64 bits, which is never lossy for an integer, and
+// narrowed here where a Go reader can see it happen.
 func propInt(dev uintptr, key string) (int32, bool) {
 	k := cfstr(key)
 	defer cfRelease(k)
@@ -183,11 +210,31 @@ func propInt(dev uintptr, key string) (int32, bool) {
 	if v == 0 {
 		return 0, false
 	}
-	var out int32
-	if !cfNumberGetValue(v, kCFNumberSInt32Type, unsafe.Pointer(&out)) {
+	if cfGetTypeID(v) != cfNumberGetTypeID() {
 		return 0, false
 	}
-	return out, true
+	var wide int64
+	if !cfNumberGetValue(v, kCFNumberSInt64Type, unsafe.Pointer(&wide)) {
+		return 0, false
+	}
+	return narrowInt32(wide)
+}
+
+// narrowInt32 brings a 64-bit registry value down to the int32 every caller
+// here wants, reporting ABSENT rather than truncating.
+//
+// ⚠ Out of range is "not present", not a wrapped number. Every caller reads a
+// vendor id, a usage page or a report size; a silently wrapped one of those is a
+// wrong device or a wrong buffer size, which is worse than not knowing.
+//
+// Split out because it is the one decision here a test can reach: the CF calls
+// above need a real IOKit and the Input Monitoring consent a bare binary has
+// not got.
+func narrowInt32(wide int64) (int32, bool) {
+	if wide < math.MinInt32 || wide > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(wide), true
 }
 
 // propStr reads a string registry property, yielding "" when absent.
