@@ -1,7 +1,8 @@
 module github.com/go-macos/iokit
 
-go 1.26.4
+go 1.27.1
 
-require github.com/ebitengine/purego v0.11.1
-
-require golang.org/x/sys v0.48.0
+require (
+	github.com/ebitengine/purego v0.11.1
+	golang.org/x/sys v0.48.0
+)
