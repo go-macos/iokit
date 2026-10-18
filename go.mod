@@ -3,6 +3,6 @@ module github.com/go-macos/iokit
 go 1.27.1
 
 require (
-	github.com/ebitengine/purego v0.11.1
+	github.com/ebitengine/purego v0.11.2
 	golang.org/x/sys v0.49.0
 )
